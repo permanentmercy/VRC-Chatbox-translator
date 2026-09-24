@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="VrcChatboxDemo.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:services="using:VrcChatboxDemo.Services"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <!-- 外层安全边距减半：12,8,12,12，弹性居中容器 -->
+        <Grid HorizontalAlignment="Stretch" Margin="12,8,12,12">
+            <StackPanel Spacing="16"
+                        HorizontalAlignment="Center"
+                        Width="Auto"
+                        MinWidth="680"
+                        MaxWidth="1080">
+                
+                <TextBlock x:Name="SettingsTitleTextBlock" Text="功能设置" Style="{StaticResource TitleTextBlockStyle}" />
+
+                <!-- 1. 语音识别与本地 AI 翻译 (Windows Media & Ollama) -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="16">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="语音识别与 AI 翻译" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <Grid RowSpacing="12" ColumnSpacing="24">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <ToggleSwitch x:Name="SpeechSwitch" Header="启用 Windows AI 语音识别 (Whisper 本地模型)"
+                                              Toggled="SpeechSwitch_Toggled"
+                                              ToolTipService.ToolTip="开启后使用本地 Whisper AI 神经网络模型实时监听转写并在卡片显示" />
+                                <Button x:Name="TestAudioFileButton" Content="测试识别音频文件"
+                                        Click="TestAudioFileButton_Click" VerticalAlignment="Center" Margin="0,14,0,0"
+                                        ToolTipService.ToolTip="立即对项目中的测试音频文件 (me.wav...) 执行 AI 语音识别并上屏" />
+                            </StackPanel>
+
+                            <ComboBox x:Name="SpeechLanguageComboBox" Grid.Column="1" Header="语音识别语言"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="SpeechLanguageComboBox_SelectionChanged"
+                                      ToolTipService.ToolTip="选择说话人使用的语言（支持自动识别、中文、英语、日语等）" />
+
+                            <Grid Grid.Row="1" Grid.Column="0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="AudioDeviceComboBox" Header="监听音频设备 (扬声器/耳机/麦克风)"
+                                          HorizontalAlignment="Stretch"
+                                          SelectionChanged="AudioDeviceComboBox_SelectionChanged"
+                                          ToolTipService.ToolTip="选择需要监听转录的音频设备（支持扬声器/耳机 Loopback 监听及麦克风拾音）" />
+                                <Button x:Name="RefreshAudioDevicesButton" Grid.Column="1" VerticalAlignment="Bottom"
+                                        Content="刷新" Click="RefreshAudioDevicesButton_Click" Margin="6,0,0,1"
+                                        ToolTipService.ToolTip="重新扫描系统扬声器与音频播放设备" />
+                            </Grid>
+
+                            <ToggleSwitch x:Name="TranslationSwitch" Grid.Row="1" Grid.Column="1" Header="启用 Ollama AI 翻译"
+                                          Toggled="TranslationSwitch_Toggled"
+                                          ToolTipService.ToolTip="识别到语音后自动调用本地 Ollama 接口进行文本翻译" />
+
+                            <ToggleSwitch x:Name="ShowRecognizedTextSwitch" Grid.Row="2" Header="显示识别原文"
+                                          Toggled="ShowRecognizedTextSwitch_Toggled"
+                                          ToolTipService.ToolTip="独立开关：是否在卡片中显示语音识别出的原文内容" />
+
+                            <ToggleSwitch x:Name="ShowTranslatedTextSwitch" Grid.Row="2" Grid.Column="1" Header="显示翻译内容"
+                                          Toggled="ShowTranslatedTextSwitch_Toggled"
+                                          ToolTipService.ToolTip="独立开关：是否在同一个卡片中显示翻译后的内容" />
+
+                            <ToggleSwitch x:Name="ShowLatencySwitch" Grid.Row="3" Header="显示翻译请求延迟"
+                                          Toggled="ShowLatencySwitch_Toggled"
+                                          ToolTipService.ToolTip="在上方卡片的翻译结果旁显示请求消耗的毫秒数" />
+
+                            <ToggleSwitch x:Name="AutoFillInputSwitch" Grid.Row="3" Grid.Column="1" Header="识别/翻译直接发送到 VRChat"
+                                          Toggled="AutoFillInputSwitch_Toggled"
+                                          ToolTipService.ToolTip="语音识别或 AI 翻译定稿后直接发送至 VRChat 头顶气泡（无打字动画），不再填入本软件输入框" />
+
+                            <ComboBox x:Name="SubtitleQueueComboBox" Grid.Row="4" Header="字幕历史保留句数"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="SubtitleQueueComboBox_SelectionChanged"
+                                      ToolTipService.ToolTip="字幕浮层中同时保留展示的历史句子数量，超出上限时先进先出（FIFO）自动移出最早的句子">
+                                <ComboBoxItem Content="1 句 (单句覆盖)" Tag="1" />
+                                <ComboBoxItem Content="2 句" Tag="2" />
+                                <ComboBoxItem Content="3 句 (默认)" Tag="3" />
+                                <ComboBoxItem Content="4 句" Tag="4" />
+                                <ComboBoxItem Content="5 句" Tag="5" />
+                                <ComboBoxItem Content="6 句" Tag="6" />
+                            </ComboBox>
+
+                            <Button x:Name="ClearSubtitleQueueButton" Grid.Row="4" Grid.Column="1" VerticalAlignment="Bottom"
+                                    Content="清空当前字幕历史" Click="ClearSubtitleQueueButton_Click" Margin="0,0,0,1"
+                                    ToolTipService.ToolTip="立即清除当前屏幕卡片中保留积累的全部语音识别与翻译历史" />
+
+                            <StackPanel Grid.Row="5" Grid.ColumnSpan="2" VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Text="当前状态" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock x:Name="SpeechStatusTextBlock" Text="就绪" Style="{StaticResource BodyTextBlockStyle}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+
+                        <MenuFlyoutSeparator />
+
+                        <!-- Ollama 参数配置 -->
+                        <Grid ColumnSpacing="12" RowSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*" />
+                                <ColumnDefinition Width="2*" />
+                                <ColumnDefinition Width="1.5*" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox x:Name="OllamaEndpointTextBox" Header="Ollama API 端点" Text="http://127.0.0.1:11434"
+                                     TextChanged="OllamaEndpointTextBox_TextChanged" />
+
+                            <Grid Grid.Column="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="OllamaModelComboBox" Header="翻译模型"
+                                          IsEditable="True"
+                                          HorizontalAlignment="Stretch"
+                                          SelectionChanged="OllamaModelComboBox_SelectionChanged" />
+                                <Button x:Name="RefreshModelsButton" Grid.Column="1" VerticalAlignment="Bottom"
+                                        Content="刷新" Click="RefreshModelsButton_Click" Margin="6,0,0,1" />
+                            </Grid>
+
+                            <ComboBox x:Name="TargetLanguageComboBox" Grid.Column="2" Header="翻译目标语言"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="TargetLanguageComboBox_SelectionChanged">
+                                <ComboBoxItem Content="英语 (English)" />
+                                <ComboBoxItem Content="日语 (Japanese)" />
+                                <ComboBoxItem Content="中文 (Chinese)" />
+                                <ComboBoxItem Content="韩语 (Korean)" />
+                                <ComboBoxItem Content="俄语 (Russian)" />
+                                <ComboBoxItem Content="法语 (French)" />
+                                <ComboBoxItem Content="德语 (German)" />
+                                <ComboBoxItem Content="西班牙语 (Spanish)" />
+                            </ComboBox>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 2. 全局唤出与沉浸式热键配置（支持任意按键组合录制，按 ESC 取消） -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="16">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="快捷热键配置" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                        <TextBlock Text="处于其他后台窗口或全屏游戏时，按下快捷键即可唤出窗口或切换极简沉浸式输入" 
+                                   Style="{StaticResource CaptionTextBlockStyle}" 
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                        <!-- 1) 唤出窗口并聚焦 -->
+                        <Grid ColumnSpacing="16" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <ToggleSwitch x:Name="HotkeySwitch" Header="全局唤出窗口"
+                                          Toggled="HotkeySwitch_Toggled"
+                                          ToolTipService.ToolTip="开启后可在任意程序中通过热键置顶并聚焦输入" />
+
+                            <TextBox x:Name="HotkeyTextBox" Grid.Column="1" Header="唤出热键"
+                                     IsReadOnly="True"
+                                     PreviewKeyDown="HotkeyTextBox_PreviewKeyDown"
+                                     HorizontalAlignment="Stretch" MaxWidth="320"
+                                     ToolTipService.ToolTip="在此框内按下任意快捷键自动生效，按 ESC 可取消修改" />
+
+                            <Button x:Name="ResetHotkeyButton" Grid.Column="2" VerticalAlignment="Bottom"
+                                    Content="恢复默认" Click="ResetHotkeyButton_Click" Margin="0,0,0,1" />
+                        </Grid>
+
+                        <!-- 2) 沉浸式极简模式开关与热键 -->
+                        <Grid ColumnSpacing="16" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <ToggleSwitch x:Name="ImmersiveHotkeySwitch" Header="沉浸式极简模式"
+                                          Toggled="ImmersiveHotkeySwitch_Toggled"
+                                          ToolTipService.ToolTip="开启后隐藏全部多余元素，只留下输入框与识别/翻译卡片，并自动跟随换行拉伸" />
+
+                            <TextBox x:Name="ImmersiveHotkeyTextBox" Grid.Column="1" Header="沉浸模式热键"
+                                     IsReadOnly="True"
+                                     PreviewKeyDown="ImmersiveHotkeyTextBox_PreviewKeyDown"
+                                     HorizontalAlignment="Stretch" MaxWidth="320"
+                                     ToolTipService.ToolTip="在此框内按下任意快捷键自动生效，按 ESC 可取消修改" />
+
+                            <Button x:Name="ResetImmersiveHotkeyButton" Grid.Column="2" VerticalAlignment="Bottom"
+                                    Content="恢复默认" Click="ResetImmersiveHotkeyButton_Click" Margin="0,0,0,1" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 3. 交互与发送选项 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="16">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="交互与发送选项" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <Grid RowSpacing="12" ColumnSpacing="24">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <ToggleSwitch x:Name="DirectSendSwitch" Header="直接上屏 (bDirect)"
+                                          Toggled="DirectSendSwitch_Toggled"
+                                          ToolTipService.ToolTip="开启：消息直接显示在头顶气泡&#x0a;关闭：仅呼出游戏内虚拟键盘" />
+
+                            <ToggleSwitch x:Name="SoundSwitch" Grid.Column="1" Header="提示音效 (bSound)"
+                                          Toggled="SoundSwitch_Toggled"
+                                          ToolTipService.ToolTip="发送消息时播放气泡提示音" />
+
+                            <ToggleSwitch x:Name="TypingSwitch" Grid.Row="1" Header="头顶打字中动画"
+                                          Toggled="TypingSwitch_Toggled"
+                                          ToolTipService.ToolTip="向 VRChat 发送 /chatbox/typing 状态" />
+
+                            <ToggleSwitch x:Name="EnterSendSwitch" Grid.Row="1" Grid.Column="1" Header="Enter 发送"
+                                          Toggled="EnterSendSwitch_Toggled"
+                                          ToolTipService.ToolTip="按 Enter 发送消息，按 Shift+Enter 换行" />
+
+                            <ToggleSwitch x:Name="ClearOnSendSwitch" Grid.Row="2" Header="发后清空输入框"
+                                          Toggled="ClearOnSendSwitch_Toggled"
+                                          ToolTipService.ToolTip="消息发送成功后立即清空输入框内容" />
+
+                            <ToggleSwitch x:Name="LiveTypingSwitch" Grid.Row="2" Grid.Column="1" Header="逐字实时上屏"
+                                          Toggled="LiveTypingSwitch_Toggled"
+                                          ToolTipService.ToolTip="输入时每打一个字立即发送到游戏头顶气泡，并持续保持打字中状态直到按 Enter 确认发送" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 4. 网络目标配置 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="16">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="OSC 目标端配置" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*" />
+                                <ColumnDefinition Width="1*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox x:Name="HostTextBox" Header="目标 IP 地址" Text="127.0.0.1" 
+                                     TextChanged="HostTextBox_TextChanged" />
+                            <TextBox x:Name="PortTextBox" Grid.Column="1" Header="端口" Text="9000" 
+                                     TextChanged="PortTextBox_TextChanged" />
+                            <Button x:Name="ResetConfigButton" Grid.Column="2" VerticalAlignment="Bottom"
+                                    Content="重置默认" Click="ResetConfigButton_Click" Margin="0,0,0,1" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 5. 发送记录与调试日志 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="16">
+                    <StackPanel Spacing="12">
+                        <Grid>
+                            <TextBlock Text="发送记录与调试日志" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" VerticalAlignment="Center" />
+                            <Button HorizontalAlignment="Right" Content="清空日志" Click="ClearLogsButton_Click" />
+                        </Grid>
+
+                        <ListView x:Name="LogsListView" Height="180"
+                                  SelectionMode="None"
+                                  BorderThickness="1"
+                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                  CornerRadius="4">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="services:LogEntryViewModel">
+                                    <Grid Margin="0,4" ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Text="{x:Bind TimeString}" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
+                                        <Border Grid.Column="1" Background="{ThemeResource LayerFillColorDefaultBrush}" 
+                                                CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Address}" Style="{StaticResource CaptionTextBlockStyle}" FontFamily="Consolas" />
+                                        </Border>
+                                        <TextBlock Grid.Column="2" Text="{x:Bind Content}" VerticalAlignment="Center" 
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="3" Text="{x:Bind StatusText}" Foreground="{x:Bind StatusColorBrush}" 
+                                                   FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </Border>
+
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="VrcChatboxDemo.Views.NetworkLogSettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:services="using:VrcChatboxDemo.Services"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid HorizontalAlignment="Stretch" Margin="12,16,12,24">
+            <StackPanel Spacing="18"
+                        HorizontalAlignment="Center"
+                        Width="Auto"
+                        MinWidth="680"
+                        MaxWidth="960">
+                
+                <StackPanel Spacing="4">
+                    <TextBlock Text="网络与日志" Style="{StaticResource TitleTextBlockStyle}" />
+                </StackPanel>
+
+                <!-- 1. OSC 目标端配置 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="18">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="VRChat OSC 发送目标端" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <Grid ColumnSpacing="16" Width="520" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="260" />
+                                <ColumnDefinition Width="140" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox x:Name="HostTextBox" Header="目标 IP 地址" Text="127.0.0.1" 
+                                     TextChanged="HostTextBox_TextChanged" />
+                            <TextBox x:Name="PortTextBox" Grid.Column="1" Header="端口" Text="9000" 
+                                     TextChanged="PortTextBox_TextChanged" />
+                            <Button x:Name="ResetConfigButton" Grid.Column="2" VerticalAlignment="Bottom"
+                                    Content="重置默认" Click="ResetConfigButton_Click" Margin="0,0,0,1" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 2. 外部应用程序开放接口 (Open API & Inbound Ports) -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="18">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="外部应用程序接收接口 (Open API)" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <ToggleSwitch x:Name="InboundSwitch" Header="开放外部接收端口 (HTTP / OSC)"
+                                      Toggled="InboundSwitch_Toggled"
+                                      ToolTipService.ToolTip="开启后允许外部程序通过 HTTP GET/POST 或 UDP OSC 发送文字" />
+
+                        <Grid ColumnSpacing="16" RowSpacing="12" Width="620" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180" />
+                                <ColumnDefinition Width="180" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBox x:Name="HttpPortTextBox" Header="HTTP API 端口" Text="9002"
+                                     TextChanged="HttpPortTextBox_TextChanged"
+                                     ToolTipService.ToolTip="支持 GET 或 POST 请求 http://127.0.0.1:端口/send?text=内容" />
+
+                            <TextBox x:Name="OscInPortTextBox" Grid.Column="1" Header="OSC UDP 接收端口" Text="9001"
+                                     TextChanged="OscInPortTextBox_TextChanged"
+                                     ToolTipService.ToolTip="监听 OSC 消息 /chatbox/input 或纯文本" />
+
+                            <Button x:Name="RestartInboundButton" Grid.Column="2" VerticalAlignment="Bottom"
+                                    Content="重启接口" Click="RestartInboundButton_Click" Margin="0,0,0,1" />
+
+                            <ToggleSwitch x:Name="AutoSendExternalSwitch" Grid.Row="1" Grid.ColumnSpan="3"
+                                          Header="收到外部消息后自动上屏至 VRChat"
+                                          Toggled="AutoSendExternalSwitch_Toggled"
+                                          ToolTipService.ToolTip="开启：收到外部文本后直接发送给 VRChat；关闭：仅填入本程序输入框供预览确认" />
+                        </Grid>
+
+                        <Border Background="{ThemeResource LayerFillColorDefaultBrush}" CornerRadius="6" Padding="12,10">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="快速调用示例 (HTTP GET / POST):" FontWeight="SemiBold" Style="{StaticResource CaptionTextBlockStyle}" />
+                                <TextBlock Text="curl &quot;http://127.0.0.1:9002/send?text=你好VRChat&quot;" FontFamily="Consolas" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock x:Name="InboundStatusTextBlock" Text="就绪" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <!-- 3. 持久化配置文件 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="18">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="持久化配置文件" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <Border Background="{ThemeResource LayerFillColorDefaultBrush}" CornerRadius="6" Padding="12,10">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="ConfigPathTextBlock" FontFamily="Consolas" VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}" />
+                                <Button x:Name="SaveConfigNowButton" Grid.Column="1" Content="立即保存" Click="SaveConfigNowButton_Click" />
+                                <Button x:Name="OpenConfigFolderButton" Grid.Column="2" Content="打开所在目录" Click="OpenConfigFolderButton_Click" />
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <!-- 4. 发送记录与调试日志 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="18">
+                    <StackPanel Spacing="12">
+                        <Grid>
+                            <TextBlock Text="发送记录与调试日志" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" VerticalAlignment="Center" />
+                            <Button HorizontalAlignment="Right" Content="清空日志" Click="ClearLogsButton_Click" />
+                        </Grid>
+
+                        <ListView x:Name="LogsListView" Height="240"
+                                  SelectionMode="None"
+                                  BorderThickness="1"
+                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                  CornerRadius="4">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="services:LogEntryViewModel">
+                                    <Grid Margin="0,4" ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Text="{x:Bind TimeString}" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
+                                        <Border Grid.Column="1" Background="{ThemeResource LayerFillColorDefaultBrush}" 
+                                                CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Address}" Style="{StaticResource CaptionTextBlockStyle}" FontFamily="Consolas" />
+                                        </Border>
+                                        <TextBlock Grid.Column="2" Text="{x:Bind Content}" VerticalAlignment="Center" 
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="3" Text="{x:Bind StatusText}" Foreground="{x:Bind StatusColorBrush}" 
+                                                   FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </Border>
+
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>

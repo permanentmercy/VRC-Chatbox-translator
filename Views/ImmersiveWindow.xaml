@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="VrcChatboxDemo.Views.ImmersiveWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="Vrc Chatbox Overlay"
+    mc:Ignorable="d">
+
+    <Grid x:Name="OverlayRootGrid" Width="620" Padding="0" Background="Transparent" VerticalAlignment="Stretch"
+          PreviewKeyDown="OverlayRootGrid_PreviewKeyDown">
+        <Grid.RowDefinitions>
+            <!-- 语音与翻译上层同框卡片 (向上自由延伸) -->
+            <RowDefinition Height="*" />
+            <!-- 消息输入卡片 (向下自由延伸) -->
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 1. 语音识别与翻译结果显示容器：四角圆角矩形 -->
+        <Border x:Name="SpeechDisplayCard"
+                Grid.Row="0"
+                CornerRadius="8"
+                Background="#EB1E1E20"
+                BorderThickness="0"
+                Margin="0,0,0,2"
+                Padding="14,8,14,10"
+                MinHeight="0"
+                VerticalAlignment="Bottom"
+                Visibility="Collapsed"
+                ToolTipService.ToolTip="语音识别与翻译卡片 (点击背景可拖动窗口)">
+            <ScrollViewer VerticalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollMode="Disabled"
+                          HorizontalScrollMode="Disabled">
+                <Grid x:Name="SpeechContentGrid" RowSpacing="6" VerticalAlignment="Bottom">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 识别原文区域 -->
+                    <Grid x:Name="RecognizedRow" Grid.Row="0" Visibility="Collapsed">
+                        <TextBlock x:Name="RecognizedTextBlock"
+                                   Text=""
+                                   TextWrapping="Wrap"
+                                   IsTextSelectionEnabled="True"
+                                   FontSize="15"
+                                   LineHeight="22"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </Grid>
+
+                    <!-- 翻译内容区域 -->
+                    <Grid x:Name="TranslatedRow" Grid.Row="1" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="TranslatedTextBlock"
+                                   Grid.Column="0"
+                                   Text=""
+                                   TextWrapping="Wrap"
+                                   IsTextSelectionEnabled="True"
+                                   FontSize="15"
+                                   FontWeight="Medium"
+                                   LineHeight="22"
+                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                        <TextBlock x:Name="TranslationLatencyTextBlock"
+                                   Grid.Column="1"
+                                   VerticalAlignment="Top"
+                                   Margin="8,2,0,0"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                   Visibility="Collapsed" />
+                    </Grid>
+                </Grid>
+            </ScrollViewer>
+        </Border>
+
+        <!-- 2. 消息输入圆角矩形卡片：放在分界线正下方，底部预留 160 DIPs 空间向下自由延伸 -->
+        <Border x:Name="InputCard"
+                Grid.Row="1"
+                CornerRadius="8"
+                Background="#EB1E1E20"
+                BorderThickness="0"
+                Margin="0,0,0,160"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Top">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <!-- 消息输入区域 -->
+                    <ColumnDefinition Width="*" />
+                    <!-- 右侧字符数与空白拖拽区域 -->
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- 隐藏的尺寸测量文本块：实时根据文字自动换行计算出精确的行高 -->
+                <TextBlock x:Name="MeasureTextBlock"
+                           Grid.Column="0"
+                           Opacity="0"
+                           IsHitTestVisible="False"
+                           TextWrapping="Wrap"
+                           FontSize="16"
+                           Text="A"
+                           Padding="14,6,8,6"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Top" />
+
+                <!-- 消息输入框 -->
+                <TextBox x:Name="MessageInputBox"
+                         Grid.Column="0"
+                         HorizontalAlignment="Stretch"
+                         VerticalAlignment="Stretch"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         FontSize="16"
+                         MinHeight="36"
+                         Padding="14,6,8,6"
+                         ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         TextChanged="MessageInputBox_TextChanged"
+                         PreviewKeyDown="MessageInputBox_PreviewKeyDown"
+                         TextCompositionStarted="MessageInputBox_TextCompositionStarted"
+                         TextCompositionEnded="MessageInputBox_TextCompositionEnded">
+                    <TextBox.Resources>
+                        <SolidColorBrush x:Key="TextControlBackground" Color="Transparent" />
+                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
+                        <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
+                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent" />
+                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent" />
+                        <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
+                    </TextBox.Resources>
+                </TextBox>
+
+                <!-- 右侧字符计数、退出按钮与空白拖拽区域 -->
+                <Border x:Name="RightDragHandle"
+                        Grid.Column="1"
+                        Background="Transparent"
+                        Padding="4,0,8,0"
+                        VerticalAlignment="Stretch"
+                        ToolTipService.ToolTip="拖动浮层窗口 (或按住 Alt / 鼠标中键拖拽)">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Spacing="6" Margin="0,0,0,6">
+                        <TextBlock x:Name="CharCountTextBlock"
+                                   VerticalAlignment="Center"
+                                   Text="0 / 144 字符"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <Button x:Name="ExitImmersiveButton"
+                                Click="ExitImmersiveButton_Click"
+                                ToolTipService.ToolTip="退出沉浸模式 (Esc 或快捷键)"
+                                VerticalAlignment="Center"
+                                Width="24"
+                                Height="24"
+                                Padding="0"
+                                Background="Transparent"
+                                BorderThickness="0">
+                            <Button.Resources>
+                                <SolidColorBrush x:Key="ButtonBackground" Color="Transparent" />
+                                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#22FFFFFF" />
+                                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#44FFFFFF" />
+                                <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+                                <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+                            </Button.Resources>
+                            <FontIcon Glyph="&#xE711;" FontSize="10" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        </Button>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

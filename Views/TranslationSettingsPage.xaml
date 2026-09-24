@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="VrcChatboxDemo.Views.TranslationSettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid HorizontalAlignment="Stretch" Margin="12,16,12,24">
+            <StackPanel Spacing="18"
+                        HorizontalAlignment="Center"
+                        Width="Auto"
+                        MinWidth="680"
+                        MaxWidth="960">
+                
+                <StackPanel Spacing="4">
+                    <TextBlock Text="AI 翻译" Style="{StaticResource TitleTextBlockStyle}" />
+                </StackPanel>
+
+                <!-- 卡片 1: Ollama 接口与模型配置 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="18">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="Ollama 服务与翻译参数" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <ToggleSwitch x:Name="TranslationSwitch" Header="启用 Ollama AI 实时翻译"
+                                      Toggled="TranslationSwitch_Toggled"
+                                      ToolTipService.ToolTip="语音识别定稿后自动调用本地 Ollama 模型进行多语言互译" />
+
+                        <!-- 固定宽度的输入项，防止点击或切换时发生横向重排抖动 -->
+                        <Grid ColumnSpacing="20" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="360" />
+                                <ColumnDefinition Width="360" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBox x:Name="OllamaEndpointTextBox" Header="Ollama API 端点" Text="http://127.0.0.1:11434"
+                                     HorizontalAlignment="Stretch"
+                                     TextChanged="OllamaEndpointTextBox_TextChanged" />
+
+                            <ComboBox x:Name="TargetLanguageComboBox" Grid.Column="1" Header="翻译目标语言"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="TargetLanguageComboBox_SelectionChanged">
+                                <ComboBoxItem Content="英语 (English)" />
+                                <ComboBoxItem Content="日语 (Japanese)" />
+                                <ComboBoxItem Content="中文 (Chinese)" />
+                                <ComboBoxItem Content="韩语 (Korean)" />
+                                <ComboBoxItem Content="俄语 (Russian)" />
+                                <ComboBoxItem Content="法语 (French)" />
+                                <ComboBoxItem Content="德语 (German)" />
+                                <ComboBoxItem Content="西班牙语 (Spanish)" />
+                            </ComboBox>
+
+                            <Grid Grid.Row="1" Grid.ColumnSpan="2" ColumnSpacing="8" Width="480" HorizontalAlignment="Left">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="OllamaModelComboBox" Header="翻译模型"
+                                          IsEditable="True"
+                                          HorizontalAlignment="Stretch"
+                                          SelectionChanged="OllamaModelComboBox_SelectionChanged" />
+                                <Button x:Name="RefreshModelsButton" Grid.Column="1" VerticalAlignment="Bottom"
+                                        Content="刷新模型" Click="RefreshModelsButton_Click" Margin="0,0,0,1" />
+                            </Grid>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 卡片 2: 自定义请求提示词 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="18">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Ollama 翻译请求提示词" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                        <TextBlock Text="支持占位符: {targetLanguage} (目标语言), {text} (待翻译文本)。留空或未包含 {text} 时将自动在末尾追加待翻内容。" 
+                                   Style="{StaticResource CaptionTextBlockStyle}" 
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                        <TextBox x:Name="OllamaPromptTextBox"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 Height="110"
+                                 HorizontalAlignment="Stretch"
+                                 TextChanged="OllamaPromptTextBox_TextChanged"
+                                 FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
+                                 FontSize="13" />
+
+                        <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+                            <TextBlock x:Name="PromptStatusTextBlock" Text="" VerticalAlignment="Center" 
+                                       Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                            <Button x:Name="ResetPromptButton" Content="恢复默认提示词" Click="ResetPromptButton_Click" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 卡片 3: 显示选项与发送联动 -->
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="18">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="显示选项与发送联动" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                        <Grid ColumnSpacing="20" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="340" />
+                                <ColumnDefinition Width="340" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <ToggleSwitch x:Name="ShowRecognizedTextSwitch" Header="显示识别原文"
+                                          Toggled="ShowRecognizedTextSwitch_Toggled"
+                                          ToolTipService.ToolTip="独立开关：是否在卡片中显示语音识别出的原文内容" />
+
+                            <ToggleSwitch x:Name="ShowTranslatedTextSwitch" Grid.Column="1" Header="显示翻译内容"
+                                          Toggled="ShowTranslatedTextSwitch_Toggled"
+                                          ToolTipService.ToolTip="独立开关：是否在同一个卡片中显示翻译后的内容" />
+
+                            <ToggleSwitch x:Name="ShowLatencySwitch" Grid.Row="1" Header="显示翻译请求延迟"
+                                          Toggled="ShowLatencySwitch_Toggled"
+                                          ToolTipService.ToolTip="在上方卡片的翻译结果旁显示请求消耗的毫秒数" />
+
+                            <ToggleSwitch x:Name="AutoFillInputSwitch" Grid.Row="1" Grid.Column="1" Header="识别/翻译直接发送到 VRChat"
+                                          Toggled="AutoFillInputSwitch_Toggled"
+                                          ToolTipService.ToolTip="语音识别或 AI 翻译定稿后直接发送至 VRChat 头顶气泡（无打字动画），不再填入本软件输入框" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>

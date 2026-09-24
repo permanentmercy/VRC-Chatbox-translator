@@ -1,0 +1,103 @@
+# ==========================================
+# Windows / OS Files
+# ==========================================
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ==========================================
+# Archives & Releases
+# ==========================================
+*.zip
+*.7z
+*.rar
+*.tar.gz
+
+# ==========================================
+# User & Local Configuration
+# ==========================================
+config.json
+*.local.json
+
+# ==========================================
+# AI Models & Audio Files (Large Binaries, >100MB)
+# ==========================================
+Models/*.bin
+models/*.bin
+Models/*.onnx
+models/*.onnx
+*.wav
+*.mp3
+*.flac
+*.pcm
+*.m4a
+
+# ==========================================
+# Build Outputs & Intermediate Files
+# ==========================================
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+ARM64/
+artifacts/
+publish/
+PublishScripts/
+AppPackages/
+BundleArtifacts/
+PackagePackages/
+Generated\ Files/
+*_wpftmp.csproj
+
+# ==========================================
+# IDE & Tooling Files
+# ==========================================
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+_ReSharper*/
+*.DotSettings.user
+*.dotCover
+
+# ==========================================
+# Build Logs & Diagnostics
+# ==========================================
+[Ll]og/
+[Ll]ogs/
+*.log
+*.binlog
+*.trx
+*.coverage
+*.coveragexml
+
+# ==========================================
+# NuGet & Packages
+# ==========================================
+*.nupkg
+*.snupkg
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+
+# ==========================================
+# Packaging Output & Certificates
+# ==========================================
+*.msix
+*.msixupload
+*.appx
+*.appxbundle
+*.appxupload
+*.cer
+*.pfx

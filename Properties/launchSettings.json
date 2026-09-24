@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "VrcChatboxDemo (Unpackaged)": {
+      "commandName": "Project"
+    },
+    "VrcChatboxDemo (Package)": {
+      "commandName": "MsixPackage"
+    }
+  }
+}
