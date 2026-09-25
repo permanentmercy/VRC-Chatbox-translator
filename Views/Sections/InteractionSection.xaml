@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="VrcChatboxDemo.Views.Sections.InteractionSection"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <StackPanel Spacing="18">
+        <StackPanel Spacing="4">
+            <TextBlock Text="交互发送" Style="{StaticResource TitleTextBlockStyle}" />
+        </StackPanel>
+
+        <!-- 交互与发送选项 -->
+        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="18">
+            <StackPanel Spacing="14">
+                <TextBlock Text="VRChat 消息发送行为" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                <Grid RowSpacing="16" ColumnSpacing="24">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="340" />
+                    </Grid.ColumnDefinitions>
+
+                    <ToggleSwitch x:Name="DirectSendSwitch" Header="直接上屏 (bDirect)"
+                                  Toggled="DirectSendSwitch_Toggled"
+                                  ToolTipService.ToolTip="开启：消息直接显示在头顶气泡&#x0a;关闭：仅呼出游戏内虚拟键盘" />
+
+                    <ToggleSwitch x:Name="SoundSwitch" Grid.Column="1" Header="提示音效 (bSound)"
+                                  Toggled="SoundSwitch_Toggled"
+                                  ToolTipService.ToolTip="发送消息时播放气泡提示音" />
+
+                    <ToggleSwitch x:Name="TypingSwitch" Grid.Row="1" Header="头顶打字中动画"
+                                  Toggled="TypingSwitch_Toggled"
+                                  ToolTipService.ToolTip="向 VRChat 发送 /chatbox/typing 状态" />
+
+                    <ToggleSwitch x:Name="EnterSendSwitch" Grid.Row="1" Grid.Column="1" Header="Enter 发送"
+                                  Toggled="EnterSendSwitch_Toggled"
+                                  ToolTipService.ToolTip="按 Enter 发送消息，按 Shift+Enter 换行" />
+
+                    <ToggleSwitch x:Name="ClearOnSendSwitch" Grid.Row="2" Header="发后清空输入框"
+                                  Toggled="ClearOnSendSwitch_Toggled"
+                                  ToolTipService.ToolTip="消息发送成功后立即清空输入框内容" />
+
+                    <ToggleSwitch x:Name="LiveTypingSwitch" Grid.Row="2" Grid.Column="1" Header="逐字实时上屏"
+                                  Toggled="LiveTypingSwitch_Toggled"
+                                  ToolTipService.ToolTip="输入时每打一个字立即发送到游戏头顶气泡，并持续保持打字中状态直到按 Enter 确认发送" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- 头顶常驻与动态模板文本 -->
+        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="18">
+            <StackPanel Spacing="14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="常驻模板" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                        <TextBlock Text="在文本中通过 {变量名} 引用动态内容。识别、翻译或外部程序通过 API 赋值后，自动刷新上屏至游戏头顶。"
+                                   Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <ToggleSwitch x:Name="PersistentTextSwitch" Grid.Column="1" VerticalAlignment="Center"
+                                  Toggled="PersistentTextSwitch_Toggled" OnContent="开启" OffContent="关闭" />
+                </Grid>
+
+                <!-- 下拉式变量列表工具栏 -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <TextBlock Text="插入变量:" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <ComboBox x:Name="VariableComboBox" Width="280"
+                                  PlaceholderText="点击选择变量插入输入框..."
+                                  SelectionChanged="VariableComboBox_SelectionChanged" />
+                        <Button x:Name="RefreshVariablesButton" ToolTipService.ToolTip="刷新可用变量列表"
+                                Click="RefreshVariablesButton_Click" Padding="6,4">
+                            <FontIcon Glyph="&#xE72C;" FontSize="12" />
+                        </Button>
+                    </StackPanel>
+                    <TextBlock x:Name="PersistentCharCountTextBlock" Grid.Column="1" HorizontalAlignment="Right" Text="0 / 144 字符"
+                               FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                </Grid>
+
+                <TextBox x:Name="PersistentTextBox"
+                         PlaceholderText="输入要在头顶常驻或发送的模板文本 (例: AFK | 正在听: {music} | 翻译: {translation})"
+                         TextWrapping="Wrap"
+                         AcceptsReturn="True"
+                         MaxLength="144"
+                         MinHeight="72"
+                         TextChanged="PersistentTextBox_TextChanged" />
+
+                <!-- 游戏内打字避让守卫设置与操作栏 -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                        <CheckBox x:Name="InGameAvoidanceCheckBox" Content="游戏内输入自动避让"
+                                  IsChecked="True" Checked="InGameAvoidanceCheckBox_Changed" Unchecked="InGameAvoidanceCheckBox_Changed"
+                                  ToolTipService.ToolTip="检测到玩家在 VRChat 游戏内打字或按回车发消息时，常驻文本自动暂停让位，避免覆盖游戏内聊天" />
+                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <TextBlock Text="避让时长:" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                            <NumberBox x:Name="AvoidanceSecondsNumberBox" Value="12" Minimum="3" Maximum="60" SpinButtonPlacementMode="Compact"
+                                       Width="85" ValueChanged="AvoidanceSecondsNumberBox_ValueChanged" ToolTipService.ToolTip="游戏内发消息后常驻文本暂停的秒数 (默认 12 秒)" />
+                            <TextBlock Text="秒" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <TextBlock x:Name="PersistentStatusTextBlock" Text=""
+                                   FontSize="12" VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" VerticalAlignment="Center">
+                        <Button x:Name="ApplyPersistentTextButton" Content="提交"
+                                Click="ApplyPersistentTextButton_Click" />
+                        <Button x:Name="ClearPersistentTextButton" Content="清空"
+                                Click="ClearPersistentTextButton_Click" />
+                    </StackPanel>
+                </Grid>
+
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</UserControl>

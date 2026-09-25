@@ -5,84 +5,16 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:sections="using:VrcChatboxDemo.Views.Sections"
     mc:Ignorable="d">
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <Grid HorizontalAlignment="Stretch" Margin="12,16,12,24">
-            <StackPanel Spacing="18"
-                        HorizontalAlignment="Center"
+            <StackPanel HorizontalAlignment="Center"
                         Width="Auto"
                         MinWidth="680"
                         MaxWidth="960">
-                
-                <StackPanel Spacing="4">
-                    <TextBlock Text="快捷热键" Style="{StaticResource TitleTextBlockStyle}" />
-                </StackPanel>
-
-                <!-- 1) 唤出窗口并聚焦 -->
-                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                        BorderThickness="1" CornerRadius="8" Padding="18">
-                    <StackPanel Spacing="14">
-                        <TextBlock Text="全局唤出主窗口" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-
-                        <Grid ColumnSpacing="16" RowSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="320" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-
-                            <ToggleSwitch x:Name="HotkeySwitch" Header="启用全局唤出"
-                                          Toggled="HotkeySwitch_Toggled"
-                                          ToolTipService.ToolTip="开启后可在任意全屏游戏或程序中通过热键置顶并聚焦输入" />
-
-                            <TextBox x:Name="HotkeyTextBox" Grid.Column="1" Header="唤出热键"
-                                     IsReadOnly="True"
-                                     PreviewKeyDown="HotkeyTextBox_PreviewKeyDown"
-                                     HorizontalAlignment="Stretch"
-                                     ToolTipService.ToolTip="在此框内按下任意快捷键自动生效，按 ESC 可取消修改" />
-
-                            <Button x:Name="ResetHotkeyButton" Grid.Column="2" VerticalAlignment="Bottom"
-                                    Content="恢复默认" Click="ResetHotkeyButton_Click" Margin="0,0,0,1" />
-                        </Grid>
-
-                        <InfoBar x:Name="HotkeyStatusInfoBar" IsOpen="False" Severity="Warning" Margin="0,2,0,0" />
-                    </StackPanel>
-                </Border>
-
-                <!-- 2) 沉浸式模式开关与热键 -->
-                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                        BorderThickness="1" CornerRadius="8" Padding="18">
-                    <StackPanel Spacing="14">
-                        <TextBlock Text="沉浸式悬浮窗" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-
-                        <Grid ColumnSpacing="16" RowSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="320" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-
-                            <ToggleSwitch x:Name="ImmersiveHotkeySwitch" Header="启用极简模式热键"
-                                          Toggled="ImmersiveHotkeySwitch_Toggled"
-                                          ToolTipService.ToolTip="开启后可通过热键无缝切换全屏沉浸悬浮窗" />
-
-                            <TextBox x:Name="ImmersiveHotkeyTextBox" Grid.Column="1" Header="沉浸模式热键"
-                                     IsReadOnly="True"
-                                     PreviewKeyDown="ImmersiveHotkeyTextBox_PreviewKeyDown"
-                                     HorizontalAlignment="Stretch"
-                                     ToolTipService.ToolTip="在此框内按下任意快捷键自动生效，按 ESC 可取消修改" />
-
-                            <Button x:Name="ResetImmersiveHotkeyButton" Grid.Column="2" VerticalAlignment="Bottom"
-                                    Content="恢复默认" Click="ResetImmersiveHotkeyButton_Click" Margin="0,0,0,1" />
-                        </Grid>
-
-                        <InfoBar x:Name="ImmersiveHotkeyStatusInfoBar" IsOpen="False" Severity="Warning" Margin="0,2,0,0" />
-                    </StackPanel>
-                </Border>
-
+                <sections:HotkeySection />
             </StackPanel>
         </Grid>
     </ScrollViewer>

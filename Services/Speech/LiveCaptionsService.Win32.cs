@@ -74,7 +74,7 @@ public partial class LiveCaptionsService
         IntPtr hWnd = FindLiveCaptionsWindow();
         if (hWnd != IntPtr.Zero) return hWnd;
 
-        StatusChanged?.Invoke("正在启动 Windows 11 原生实时字幕...");
+        StatusChanged?.Invoke("正在启动 Windows 11 实时字幕...");
         try
         {
             var psi = new ProcessStartInfo
@@ -158,12 +158,12 @@ public partial class LiveCaptionsService
             if (isTool)
             {
                 RestoreNativeWindow();
-                StatusChanged?.Invoke("已显示 Windows 实时字幕窗口 (您可在其界面调整麦克风或语言设置)");
+                StatusChanged?.Invoke("已显示 Windows 实时字幕窗口 ");
             }
             else
             {
                 HideNativeWindow();
-                StatusChanged?.Invoke("已隐藏 Windows 实时字幕窗口 (后台静默工作)");
+                StatusChanged?.Invoke("已隐藏 Windows 实时字幕窗口");
             }
         }
         catch { }

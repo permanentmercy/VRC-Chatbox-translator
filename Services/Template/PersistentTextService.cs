@@ -302,8 +302,8 @@ public class PersistentTextService : IDisposable
                 {
                     try
                     {
-                        // 每 5 秒检测并保活一次（VRChat 气泡约 9 秒自动消失）
-                        await Task.Delay(5000, token);
+                        // 每 3 秒检测并保活一次（VRChat 气泡约 9 秒自动消失）
+                        await Task.Delay(3000, token);
                         if (token.IsCancellationRequested) break;
 
                         string template;

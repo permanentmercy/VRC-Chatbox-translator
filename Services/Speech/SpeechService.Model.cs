@@ -248,13 +248,13 @@ public partial class SpeechService
             if (_factory == null)
             {
                 EnsureCudaEnvironment();
-                StatusChanged?.Invoke("正在加载 Whisper 本地 AI 模型 (尝试启用 GPU/CUDA 加速)...");
+                StatusChanged?.Invoke("正在加载 Whisper 模型 (尝试启用 GPU/CUDA 加速)...");
                 string modelPath = await EnsureModelPathAsync(_currentModelType);
                 try
                 {
                     _factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
                     var loadedLib = RuntimeOptions.LoadedLibrary;
-                    StatusChanged?.Invoke($"Whisper 本地模型就绪 [推理加速: {loadedLib}]");
+                    StatusChanged?.Invoke($"Whisper模型就绪 [推理加速: {loadedLib}]");
                 }
                 catch (Exception ex)
                 {
