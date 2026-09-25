@@ -36,6 +36,12 @@ public class PersistentTextService : IDisposable
     private DateTime _manualSubmitTransientUntil = DateTime.MinValue;
     private string _lastRenderedText = string.Empty;
 
+    // 速率门控与尾随合并队列控制 (遵守 VRChat 9包/2秒频控限制)
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private DateTime _lastOscSendTime = DateTime.MinValue;
+    private volatile bool _hasPendingUpdate = false;
+    private const int MinSendIntervalMs = 120;
+
     public bool IsEnabled { get; set; } = false;
     public string CustomText { get; set; } = string.Empty;
     public bool EnableInGameAvoidance { get; set; } = true;
@@ -276,63 +282,96 @@ public class PersistentTextService : IDisposable
     /// <summary>
     /// 当变量值更新时，由外部通知。
     /// 锁内维持提交状态并独立重置该变量对应的生命周期计时；
-    /// 锁外完成每个括号块独立判定的文本预处理、变量渲染与 OSC 发送。
+    /// 锁外通过带尾随合并（Trailing Coalescing）的单槽速率门控队列，平滑将最新渲染结果推送至 VRChat，
+    /// 既避免多任务并发竞争与丢包，又严格遵守 VRChat 9包/2秒频控限制。
     /// </summary>
     public async Task OnVariableUpdatedAsync(string variableName, VariableService variableService, OscService oscService)
     {
-        string template;
-        Dictionary<string, DateTime> activeVarsSnapshot;
-        DateTime manualSubmitUntil;
-        DateTime now;
-
         // 1. 锁内维持提交状态并独立更新该变量生命周期时间戳 (极小临界区)
         lock (_lock)
         {
             if (!IsEnabled || string.IsNullOrWhiteSpace(CustomText)) return;
-            template = CustomText;
+            if (!variableService.UsesVariable(CustomText, variableName)) return;
 
-            // 检查当前模板是否使用了这个被更新的变量
-            if (!variableService.UsesVariable(template, variableName))
-            {
-                return;
-            }
-
-            now = DateTime.UtcNow;
-            // 核心：仅独立激活/重置当前发生变更的变量生命周期计时！
+            DateTime now = DateTime.UtcNow;
             _varTransientUntil[variableName] = now.AddSeconds(_transientDurationSeconds);
-
-            // 拷贝当前各变量有效期的只读快照，供锁外进行纯函数文本处理
-            activeVarsSnapshot = new Dictionary<string, DateTime>(_varTransientUntil, StringComparer.OrdinalIgnoreCase);
-            manualSubmitUntil = _manualSubmitTransientUntil;
         }
 
-        // 2. 锁外部执行避让检测
-        if (IsInAvoidance(out _, out _))
+        // 标记有更新需要推送
+        _hasPendingUpdate = true;
+
+        // 若已有发送队列在处理，直接退出，运行中的队列会在末尾自动提取最新文本完成补偿推送 (Coalescing / Trailing)
+        if (!await _sendGate.WaitAsync(0))
         {
             return;
         }
 
-        // 3. 锁外部完成每个括号块独立判定的文本预处理与变量渲染拼接
-        string processedTemplate = PrepareTemplateForRender(template, activeVarsSnapshot, manualSubmitUntil, now);
-        string rendered = variableService.Render(processedTemplate);
-        if (string.IsNullOrWhiteSpace(rendered)) return;
-
         try
         {
-            await oscService.SendTypingAsync(false, recordLog: false);
-            await Task.Delay(40);
-            await oscService.SendChatboxMessageAsync(rendered, direct: true, playSound: false, recordLog: false);
-            await Task.Delay(40);
-            await oscService.SendTypingAsync(false, recordLog: false);
-
-            lock (_lock)
+            while (_hasPendingUpdate)
             {
-                _lastRenderedText = rendered;
+                _hasPendingUpdate = false;
+
+                if (IsInAvoidance(out _, out _))
+                {
+                    return;
+                }
+
+                string template;
+                Dictionary<string, DateTime> activeVarsSnapshot;
+                DateTime manualSubmitUntil;
+                DateTime now;
+                string lastRendered;
+
+                lock (_lock)
+                {
+                    if (!IsEnabled || string.IsNullOrWhiteSpace(CustomText)) return;
+                    template = CustomText;
+                    now = DateTime.UtcNow;
+                    activeVarsSnapshot = new Dictionary<string, DateTime>(_varTransientUntil, StringComparer.OrdinalIgnoreCase);
+                    manualSubmitUntil = _manualSubmitTransientUntil;
+                    lastRendered = _lastRenderedText;
+                }
+
+                string processedTemplate = PrepareTemplateForRender(template, activeVarsSnapshot, manualSubmitUntil, now);
+                string rendered = variableService.Render(processedTemplate);
+
+                // 如果渲染结果为空或与当前游戏内已呈现内容完全一致，则无需重复发送
+                if (string.IsNullOrWhiteSpace(rendered) || string.Equals(rendered, lastRendered, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                // 速率控制：确保向 VRChat 发送的频率不超过限额 (至少间隔 MinSendIntervalMs)
+                var elapsed = (DateTime.UtcNow - _lastOscSendTime).TotalMilliseconds;
+                if (elapsed < MinSendIntervalMs)
+                {
+                    int delayMs = MinSendIntervalMs - (int)elapsed;
+                    await Task.Delay(delayMs);
+                }
+
+                // 若在等待间隔中又有新的变量输入（如用户连续快速吐字），跳过过时文本，立即进入下一轮拉取最新文本
+                if (_hasPendingUpdate)
+                {
+                    continue;
+                }
+
+                await oscService.SendChatboxMessageAsync(rendered, direct: true, playSound: false, recordLog: false);
+                _lastOscSendTime = DateTime.UtcNow;
+
+                lock (_lock)
+                {
+                    _lastRenderedText = rendered;
+                }
             }
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"[PersistentTextService] OnVariableUpdated error: {ex.Message}");
+        }
+        finally
+        {
+            _sendGate.Release();
         }
     }
 
@@ -388,11 +427,8 @@ public class PersistentTextService : IDisposable
         string rendered = variableService.Render(processed);
 
         // 立即强制向 VRChat 推送
-        await oscService.SendTypingAsync(false, recordLog: false);
-        await Task.Delay(40);
         bool sent = await oscService.SendChatboxMessageAsync(rendered, direct: true, playSound: false, recordLog: false);
-        await Task.Delay(40);
-        await oscService.SendTypingAsync(false, recordLog: false);
+        _lastOscSendTime = DateTime.UtcNow;
 
         lock (_lock)
         {
@@ -483,7 +519,7 @@ public class PersistentTextService : IDisposable
 
                         // 循环保活推送：无声、不记录刷屏日志、绝对不发送打字动画
                         await oscService.SendChatboxMessageAsync(textToSend, direct: true, playSound: false, recordLog: false);
-                        await oscService.SendTypingAsync(false, recordLog: false);
+                        _lastOscSendTime = DateTime.UtcNow;
 
                         lock (_lock)
                         {
@@ -523,5 +559,6 @@ public class PersistentTextService : IDisposable
     public void Dispose()
     {
         StopLoop();
+        _sendGate.Dispose();
     }
 }

@@ -15,6 +15,8 @@ public partial class SettingsService
     private string _lastInterimTranslationText = string.Empty;
     private DateTime _lastInterimTranslationTime = DateTime.MinValue;
     private long _translationSequence = 0;
+    private bool _isNewSentence = true;
+    private string _lastHypothesisSpeech = string.Empty;
 
     public void ClearSubtitleQueue()
     {
@@ -31,21 +33,40 @@ public partial class SettingsService
         {
             _subtitleEntries.Clear();
         }
+        _isNewSentence = true;
+        _lastHypothesisSpeech = string.Empty;
         LiveCaptionsService.ResetHistory();
         LastRecognizedText = string.Empty;
         LastTranslatedText = string.Empty;
         LastTranslationLatencyMs = 0;
         SpeechRecognizedUpdated?.Invoke(string.Empty);
         TranslationUpdated?.Invoke(string.Empty, 0);
+        VariableService.SetVariable("speech", string.Empty);
+        VariableService.SetVariable("translation", string.Empty);
     }
 
     private void OnSpeechHypothesis(string interimText)
     {
+        string cleanHypo = (interimText ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
+        if (!string.IsNullOrWhiteSpace(cleanHypo) && !string.Equals(cleanHypo, _lastHypothesisSpeech, StringComparison.Ordinal))
+        {
+            _lastHypothesisSpeech = cleanHypo;
+            if (_isNewSentence)
+            {
+                _isNewSentence = false;
+                if (IsTranslationEnabled)
+                {
+                    VariableService.SetVariable("translation", string.Empty);
+                }
+            }
+            VariableService.SetVariable("speech", cleanHypo);
+        }
+
         UpdateCombinedSubtitles(interimText);
         TryTriggerInterimTranslation(interimText);
     }
 
-    private void TryTriggerInterimTranslation(string interimText)
+    private void TryTriggerInterimTranslation(string? interimText)
     {
         if (!IsTranslationEnabled) return;
         if (string.IsNullOrWhiteSpace(interimText)) return;
@@ -143,6 +164,9 @@ public partial class SettingsService
             _currentInterimTranslation = null;
             _lastInterimTranslationText = string.Empty;
         }
+
+        _isNewSentence = true;
+        _lastHypothesisSpeech = string.Empty;
 
         UpdateCombinedSubtitles();
         VariableService.SetVariable("speech", text);
