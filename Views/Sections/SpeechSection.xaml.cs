@@ -135,6 +135,14 @@ public sealed partial class SpeechSection : UserControl
         if (_isInitializing) return;
         if (SpeechEngineComboBox.SelectedItem is ComboBoxItem item && item.Tag is string tag)
         {
+            if (string.Equals(tag, "LiveCaptions", StringComparison.OrdinalIgnoreCase))
+            {
+                if (SettingsService.Instance.AudioInputDeviceId.StartsWith("process:", StringComparison.OrdinalIgnoreCase))
+                {
+                    AudioDeviceComboBox.SelectedIndex = 0;
+                    SettingsService.Instance.AudioInputDeviceId = string.Empty;
+                }
+            }
             SettingsService.Instance.SpeechEngine = tag;
             UpdateEngineVisibility(tag);
         }
@@ -472,6 +480,15 @@ public sealed partial class SpeechSection : UserControl
             if (devIdx >= 0 && devIdx < _audioDevices.Count)
             {
                 var dev = _audioDevices[devIdx];
+                if (dev.EndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.Equals(SettingsService.Instance.SpeechEngine, "Whisper", StringComparison.OrdinalIgnoreCase))
+                    {
+                        SpeechEngineComboBox.SelectedIndex = 0;
+                        SettingsService.Instance.SpeechEngine = "Whisper";
+                        UpdateEngineVisibility("Whisper");
+                    }
+                }
                 await SettingsService.Instance.SwitchAudioDeviceAsync(dev.EndpointId, dev.Name);
             }
         }
@@ -527,7 +544,7 @@ public sealed partial class SpeechSection : UserControl
         }
         else
         {
-            ProcessStatusText.Text = $"未找到指定进程: {processName} (已接入系统扬声器，后台每3秒自动轮询，启动游戏将自动连接)";
+            ProcessStatusText.Text = $"未找到指定进程: {processName} (隔离静音待机中，后台自动轮询，启动游戏将自动连接)";
             ProcessStatusText.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
         }
     }

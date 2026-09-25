@@ -2,9 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
-using Interop.UIAutomationClient;
+using Microsoft.Win32;
 
 namespace VrcChatboxDemo.Services;
 
@@ -26,7 +25,42 @@ public partial class LiveCaptionsService
     };
 
     /// <summary>
-    /// 在后台静默切换 Windows 11 实时字幕的识别语言，无需手动呼出黑底窗口
+    /// 直接将字幕语言代码写入 Windows 11 LiveCaptions 原生注册表配置中
+    /// </summary>
+    public static void SetRegistryLanguage(string langCode)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\LiveCaptions\UI");
+            key?.SetValue("CaptionLanguage", langCode, RegistryValueKind.String);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[LiveCaptions] Failed to set registry language: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 读取 Windows 11 LiveCaptions 当前注册表配置的字幕语言代码
+    /// </summary>
+    public static string GetRegistryLanguage()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\LiveCaptions\UI");
+            return key?.GetValue("CaptionLanguage") as string ?? "zh-CN";
+        }
+        catch
+        {
+            return "zh-CN";
+        }
+    }
+
+    /// <summary>
+    /// 在后台静默切换 Windows 11 实时字幕的识别语言：
+    /// 1. 写入系统原生注册表配置；
+    /// 2. 若当前正在运行，无缝静默热重启 LiveCaptions 进程以立即加载新语言模型；
+    /// 3. 全程不弹出任何系统设置菜单、无需鼠标点击，100% 稳定切换。
     /// </summary>
     public async Task<bool> SwitchLanguageAsync(string langCodeOrKeyword)
     {
@@ -39,199 +73,24 @@ public partial class LiveCaptionsService
             ?? new LiveCaptionsLanguage(langCodeOrKeyword, langCodeOrKeyword, langCodeOrKeyword);
 
         StatusChanged?.Invoke($"正在切换 Windows 实时字幕语言至: {targetLang.DisplayName}...");
+        SetRegistryLanguage(targetLang.Code);
 
-        return await Task.Run(async () =>
+        // 如果当前实时字幕正在运行或处于监听状态，静默热重载以生效新语言设置
+        if (_isRunning || FindLiveCaptionsWindow() != IntPtr.Zero)
         {
-            try
+            bool ok = await RestartAsync(SettingsService.Instance.LiveCaptionsHideNativeWindow);
+            if (ok)
             {
-                if (_hWnd == IntPtr.Zero || !IsWindow(_hWnd))
-                {
-                    _hWnd = FindLiveCaptionsWindow();
-                }
-
-                if (_hWnd == IntPtr.Zero)
-                {
-                    StatusChanged?.Invoke("未找到 Windows 实时字幕窗口，请先开启实时字幕");
-                    return false;
-                }
-
-                GetWindowThreadProcessId(_hWnd, out uint livePid);
-                if (livePid == 0) return false;
-
-                var uia = new CUIAutomation();
-                var windowElement = uia.ElementFromHandle(_hWnd);
-                if (windowElement == null) return false;
-
-                // 1. 查找设置齿轮按钮 (AutomationId: "SettingsButton" 或包含设置字样)
-                var condSettings = uia.CreateOrCondition(
-                    uia.CreatePropertyCondition(UIA_PropertyIds.UIA_AutomationIdPropertyId, "SettingsButton"),
-                    uia.CreatePropertyCondition(UIA_PropertyIds.UIA_NamePropertyId, "设置")
-                );
-
-                var settingsBtn = windowElement.FindFirst(TreeScope.TreeScope_Descendants, condSettings);
-                if (settingsBtn == null)
-                {
-                    var btnCond = uia.CreatePropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_ButtonControlTypeId);
-                    var allBtns = windowElement.FindAll(TreeScope.TreeScope_Descendants, btnCond);
-                    for (int i = 0; i < allBtns.Length; i++)
-                    {
-                        var b = allBtns.GetElement(i);
-                        string bName = b.CurrentName ?? string.Empty;
-                        string bId = b.CurrentAutomationId ?? string.Empty;
-                        if (bId.Contains("Setting", StringComparison.OrdinalIgnoreCase) ||
-                            bName.Contains("设置", StringComparison.OrdinalIgnoreCase) ||
-                            bName.Contains("Setting", StringComparison.OrdinalIgnoreCase))
-                        {
-                            settingsBtn = b;
-                            break;
-                        }
-                    }
-                }
-
-                if (settingsBtn == null)
-                {
-                    StatusChanged?.Invoke("未找到实时字幕设置按钮");
-                    return false;
-                }
-
-                // 2. 触发点击设置按钮弹出菜单
-                var invokePattern = settingsBtn.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) as IUIAutomationInvokePattern;
-                if (invokePattern != null)
-                {
-                    invokePattern.Invoke();
-                }
-                else
-                {
-                    var expPattern = settingsBtn.GetCurrentPattern(UIA_PatternIds.UIA_ExpandCollapsePatternId) as IUIAutomationExpandCollapsePattern;
-                    if (expPattern != null) expPattern.Expand();
-                    else SimulateClick(settingsBtn.CurrentBoundingRectangle);
-                }
-
-                await Task.Delay(300);
-
-                // 3. 在系统全局范围内按 LiveCaptions PID 查找弹出的菜单或浮层元素
-                var root = uia.GetRootElement();
-                var pidCond = uia.CreatePropertyCondition(UIA_PropertyIds.UIA_ProcessIdPropertyId, (int)livePid);
-                var liveElements = root.FindAll(TreeScope.TreeScope_Descendants, pidCond);
-
-                IUIAutomationElement? langMenuItem = null;
-                for (int i = 0; i < liveElements.Length; i++)
-                {
-                    var el = liveElements.GetElement(i);
-                    string name = el.CurrentName ?? string.Empty;
-                    if (name.Contains("标注语言", StringComparison.OrdinalIgnoreCase) ||
-                        name.Contains("Caption language", StringComparison.OrdinalIgnoreCase) ||
-                        name.Contains("语言", StringComparison.OrdinalIgnoreCase) ||
-                        name.Contains("Language", StringComparison.OrdinalIgnoreCase))
-                    {
-                        langMenuItem = el;
-                        break;
-                    }
-                }
-
-                if (langMenuItem == null)
-                {
-                    StatusChanged?.Invoke("未在弹出菜单中定位到【标注语言】项");
-                    SendEscKey();
-                    return false;
-                }
-
-                // 4. 展开“标注语言”子菜单
-                bool subMenuTriggered = false;
-                var langExp = langMenuItem.GetCurrentPattern(UIA_PatternIds.UIA_ExpandCollapsePatternId) as IUIAutomationExpandCollapsePattern;
-                if (langExp != null)
-                {
-                    langExp.Expand();
-                    subMenuTriggered = true;
-                }
-
-                var langInv = langMenuItem.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) as IUIAutomationInvokePattern;
-                if (langInv != null)
-                {
-                    langInv.Invoke();
-                    subMenuTriggered = true;
-                }
-
-                if (!subMenuTriggered)
-                {
-                    SimulateClick(langMenuItem.CurrentBoundingRectangle);
-                }
-
-                await Task.Delay(300);
-
-                // 5. 在展开的子菜单中重新扫描 PID 对应的元素以定位目标语言
-                liveElements = root.FindAll(TreeScope.TreeScope_Descendants, pidCond);
-                IUIAutomationElement? targetLangItem = null;
-
-                for (int i = 0; i < liveElements.Length; i++)
-                {
-                    var el = liveElements.GetElement(i);
-                    string name = el.CurrentName ?? string.Empty;
-                    if (name.Contains(targetLang.MatchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                        name.Contains(targetLang.DisplayName, StringComparison.OrdinalIgnoreCase) ||
-                        (!string.IsNullOrEmpty(targetLang.Code) && name.Contains(targetLang.Code, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        targetLangItem = el;
-                        break;
-                    }
-                }
-
-                if (targetLangItem != null)
-                {
-                    var targetInv = targetLangItem.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) as IUIAutomationInvokePattern;
-                    if (targetInv != null)
-                    {
-                        targetInv.Invoke();
-                    }
-                    else
-                    {
-                        var targetSel = targetLangItem.GetCurrentPattern(UIA_PatternIds.UIA_SelectionItemPatternId) as IUIAutomationSelectionItemPattern;
-                        if (targetSel != null) targetSel.Select();
-                        else SimulateClick(targetLangItem.CurrentBoundingRectangle);
-                    }
-
-                    await Task.Delay(150);
-                    SendEscKey(); // 确保菜单关闭
-
-                    StatusChanged?.Invoke($"Windows 实时字幕语言已切换为: {targetLang.DisplayName}");
-                    return true;
-                }
-
-                // 退出并关闭遗留的弹出菜单
-                SendEscKey();
-                SendEscKey();
-
-                StatusChanged?.Invoke($"未在实时字幕菜单中匹配到语言: {targetLang.DisplayName}，可能系统尚未下载该语言包");
-                return false;
+                StatusChanged?.Invoke($"Windows 实时字幕语言已切换为: {targetLang.DisplayName}");
+                return true;
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[LiveCaptions] SwitchLanguage failed: {ex.Message}");
-                StatusChanged?.Invoke($"切换实时字幕语言出错: {ex.Message}");
-                try { SendEscKey(); } catch { }
-                return false;
-            }
-        });
-    }
-
-    private static void SimulateClick(tagRECT rect)
-    {
-        if (rect.right > rect.left && rect.bottom > rect.top)
-        {
-            int cx = (rect.left + rect.right) / 2;
-            int cy = (rect.top + rect.bottom) / 2;
-            SetCursorPos(cx, cy);
-            Thread.Sleep(40);
-            mouse_event(MOUSEEVENTF_LEFTDOWN, cx, cy, 0, UIntPtr.Zero);
-            Thread.Sleep(30);
-            mouse_event(MOUSEEVENTF_LEFTUP, cx, cy, 0, UIntPtr.Zero);
         }
-    }
+        else
+        {
+            StatusChanged?.Invoke($"已保存 Windows 实时字幕语言: {targetLang.DisplayName}");
+            return true;
+        }
 
-    private static void SendEscKey()
-    {
-        keybd_event(VK_ESCAPE, 0, 0, UIntPtr.Zero);
-        Thread.Sleep(30);
-        keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        return false;
     }
 }

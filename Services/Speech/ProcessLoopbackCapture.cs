@@ -81,10 +81,10 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
         }
         else
         {
-            statusCallback?.Invoke($"未检测到 {processName} 运行，已接入系统扬声器 (等待游戏启动)...");
+            statusCallback?.Invoke($"未检测到 {processName} 运行，隔离监听待机中 (检测到启动后将自动连接)...");
         }
 
-        // 回退至系统默认输出回路
+        // 回退至系统默认输出回路待机（目标进程启动前保持静音过滤）
         var fallbackBuilder = new WasapiRecorderBuilder().WithLoopbackCapture();
         var fallbackRecorder = await fallbackBuilder.BuildAsync();
         ProcessStateChanged?.Invoke(processName, false, 0);
@@ -106,6 +106,9 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
     private void OnRecorderDataAvailable(ReadOnlySpan<byte> buffer, AudioClientBufferFlags flags, long devicePosition, long qpcPosition)
     {
         if (!_isRecording) return;
+        // 若目标隔离进程未启动，静音待机，绝不混入任何系统背景音乐或杂音
+        if (!_isProcessFound) return;
+
         byte[] array = buffer.ToArray();
         DataAvailable?.Invoke(this, new WaveInEventArgs(array, array.Length));
     }

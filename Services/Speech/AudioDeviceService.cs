@@ -58,10 +58,13 @@ public static class AudioDeviceService
                 string targetProc = SettingsService.Instance.TargetAudioProcessName;
                 if (string.IsNullOrWhiteSpace(targetProc)) targetProc = "VRChat";
 
+                bool isRunning = AudioProcessService.IsProcessRunning(targetProc, out _);
+                string procStatus = isRunning ? "(运行中)" : "(未找到/待机)";
+
                 list.Add(new AudioDeviceInfo(
                     Id: "process:" + targetProc,
                     EndpointId: "process:" + targetProc,
-                    Name: $"[进程隔离监听] 仅监听游戏/应用: {targetProc} (过滤音乐与外部杂音)",
+                    Name: $"[进程隔离监听] 仅监听: {targetProc} {procStatus} (过滤音乐与外部杂音)",
                     IsDefault: false));
 
                 // 1. 扬声器 / 耳机 (Render)

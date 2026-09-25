@@ -120,6 +120,69 @@ public partial class LiveCaptionsService : IDisposable
         }
     }
 
+    public async Task<bool> RestartAsync(bool hideNativeWindow = true)
+    {
+        await _sessionLock.WaitAsync();
+        try
+        {
+            _isRunning = false;
+            RunningStateChanged?.Invoke(false);
+
+            try
+            {
+                _workerCts?.Cancel();
+                _workerCts?.Dispose();
+                _workerCts = null;
+            }
+            catch { }
+
+            // 终止旧的 LiveCaptions 进程实例，以便重新加载注册表中的 CaptionLanguage
+            try
+            {
+                var procs = Process.GetProcessesByName("LiveCaptions");
+                foreach (var p in procs)
+                {
+                    try { p.Kill(); } catch { }
+                }
+            }
+            catch { }
+
+            _hWnd = IntPtr.Zero;
+            await Task.Delay(200);
+
+            _workerCts = new CancellationTokenSource();
+            var token = _workerCts.Token;
+
+            _hWnd = await EnsureLiveCaptionsProcessAsync(token);
+            if (_hWnd == IntPtr.Zero)
+            {
+                ErrorOccurred?.Invoke("重启 Windows 实时字幕失败，未找到窗口");
+                return false;
+            }
+
+            if (hideNativeWindow)
+            {
+                HideNativeWindow();
+            }
+
+            _isRunning = true;
+            RunningStateChanged?.Invoke(true);
+            StatusChanged?.Invoke("Windows 11 实时字幕已完成重启并应用新语言");
+
+            _ = Task.Run(() => PollingLoopAsync(token), token);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ErrorOccurred?.Invoke($"重启 Windows 实时字幕异常: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
     private async Task PollingLoopAsync(CancellationToken ct)
     {
         CUIAutomation? uia = null;
