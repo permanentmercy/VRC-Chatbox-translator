@@ -37,6 +37,7 @@ public sealed partial class InteractionSection : UserControl
 
         InGameAvoidanceCheckBox.IsChecked = s.InGameAvoidanceEnabled;
         AvoidanceSecondsNumberBox.Value = s.InGameAvoidanceSeconds;
+        InitTransientDuration(s.TransientTextDurationSeconds);
 
         LoadVariablesToComboBox();
         UpdateCharCount();
@@ -269,5 +270,30 @@ public sealed partial class InteractionSection : UserControl
         await s.PersistentTextService.ClearAsync(s.OscService);
         UpdateCharCount();
         RefreshStatusText();
+    }
+
+    private void InitTransientDuration(int duration)
+    {
+        int selIdx = 3; // 默认 10 秒
+        for (int i = 0; i < TransientDurationComboBox.Items.Count; i++)
+        {
+            if (TransientDurationComboBox.Items[i] is ComboBoxItem item &&
+                int.TryParse(item.Tag?.ToString(), out int val) && val == duration)
+            {
+                selIdx = i;
+                break;
+            }
+        }
+        TransientDurationComboBox.SelectedIndex = selIdx;
+    }
+
+    private void TransientDurationComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        if (TransientDurationComboBox.SelectedItem is ComboBoxItem item &&
+            int.TryParse(item.Tag?.ToString(), out int val))
+        {
+            SettingsService.Instance.TransientTextDurationSeconds = val;
+        }
     }
 }

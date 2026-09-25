@@ -129,6 +129,9 @@ public partial class SettingsService
         InboundService.HttpPort = Config.InboundHttpPort;
         InboundService.OscPort = Config.InboundOscPort;
         InboundService.AutoSendToVrc = Config.InboundAutoSendToVrc;
+        PersistentTextService.EnableInGameAvoidance = Config.InGameAvoidanceEnabled;
+        PersistentTextService.AvoidanceSeconds = Config.InGameAvoidanceSeconds;
+        PersistentTextService.TransientDurationSeconds = Config.TransientTextDurationSeconds;
 
         if (Config.IsSpeechRecognitionEnabled)
         {

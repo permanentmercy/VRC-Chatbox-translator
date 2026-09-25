@@ -50,6 +50,7 @@ public class AppConfig
     public string PersistentCustomText { get; set; } = string.Empty;
     public bool InGameAvoidanceEnabled { get; set; } = true;
     public int InGameAvoidanceSeconds { get; set; } = 12;
+    public int TransientTextDurationSeconds { get; set; } = 10;
 
     // ==========================================
     // 快捷热键配置

@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,9 +10,10 @@ namespace VrcChatboxDemo.Services;
 /// 独立的头顶常驻与动态模板文本服务
 /// 负责：
 /// 1. 解析常驻模板中的 {变量名} 占位符；
-/// 2. 当语音识别、AI翻译或外部 API 变量变更时即时触发渲染推送；
-/// 3. 定时循环刷新 VRChat 头顶气泡以维持常驻；
-/// 4. 严密检测玩家在本程序及 VRChat 游戏内打字、回车发送与外部避让，杜绝覆盖游戏内聊天。
+/// 2. 支持使用 "[]" 标注瞬态文本，仅在变量更新或提交时临时保留指定秒数，过期后自动隐藏；
+/// 3. 在锁内维护提交与状态时间戳，在锁外完成文本拼接与正则处理；
+/// 4. 定时循环刷新 VRChat 头顶气泡以维持常驻；
+/// 5. 严密检测玩家在本程序及 VRChat 游戏内打字、回车发送与外部避让，杜绝覆盖游戏内聊天。
 /// </summary>
 public class PersistentTextService : IDisposable
 {
@@ -27,6 +29,11 @@ public class PersistentTextService : IDisposable
     private DateTime _pausedUntil = DateTime.MinValue;
     private int _avoidanceSeconds = 12;
 
+    // [] 瞬态标注文本生命周期控制
+    private int _transientDurationSeconds = 10;
+    private DateTime _transientUntil = DateTime.MinValue;
+    private bool _wasTransientActive = false;
+
     public bool IsEnabled { get; set; } = false;
     public string CustomText { get; set; } = string.Empty;
     public bool EnableInGameAvoidance { get; set; } = true;
@@ -37,8 +44,43 @@ public class PersistentTextService : IDisposable
         set => _avoidanceSeconds = Math.Clamp(value, 3, 60);
     }
 
+    /// <summary>
+    /// 被 "[]" 标注的文本在变量更新时的保留秒数 (默认 10 秒)
+    /// </summary>
+    public int TransientDurationSeconds
+    {
+        get => _transientDurationSeconds;
+        set => _transientDurationSeconds = Math.Clamp(value, 1, 300);
+    }
+
     public event Action<string>? StatusNotice;
     public event Action? StateChanged;
+
+    /// <summary>
+    /// 处理模板中被 [] 标注的瞬态文本 (纯函数，在锁外部执行):
+    /// - isTransientActive 为 true 时: 将 [内容] 展开为 内容
+    /// - isTransientActive 为 false 时: 将 [内容] 整体移除，并自动修剪多余的分隔符和空格
+    /// </summary>
+    public static string PrepareTemplateForRender(string template, bool isTransientActive)
+    {
+        if (string.IsNullOrEmpty(template)) return string.Empty;
+
+        if (isTransientActive)
+        {
+            // 激活态: 展开中括号
+            return Regex.Replace(template, @"\[([^\]]+)\]", "$1");
+        }
+        else
+        {
+            // 过期/未激活态: 移除所有中括号及其内部内容
+            string stripped = Regex.Replace(template, @"\[[^\]]*\]", string.Empty);
+
+            // 智能清洗遗留的多余分隔符 (比如连续的 " |  | " 归一化为 " | ")
+            stripped = Regex.Replace(stripped, @"(\s*[\|／/\\,\-]\s*)+", " | ");
+            stripped = stripped.Trim(' ', '|', '-', '/', '\\', ',');
+            return stripped;
+        }
+    }
 
     /// <summary>
     /// 本程序主窗口手动发送了聊天消息
@@ -187,30 +229,41 @@ public class PersistentTextService : IDisposable
     }
 
     /// <summary>
-    /// 当变量值更新时，由外部通知。若当前模板引用了该变量且处于开启状态，立即触发重新渲染与发送
+    /// 当变量值更新时，由外部通知。
+    /// 锁内维持提交与瞬态生命周期状态；锁外完成文本拼接、展开与 OSC 发送。
     /// </summary>
     public async Task OnVariableUpdatedAsync(string variableName, VariableService variableService, OscService oscService)
     {
         string template;
+        bool isTransientActive;
+
+        // 1. 锁内维持提交与瞬态生命周期状态
         lock (_lock)
         {
             if (!IsEnabled || string.IsNullOrWhiteSpace(CustomText)) return;
             template = CustomText;
+
+            // 检查当前模板是否使用了这个被更新的变量
+            if (!variableService.UsesVariable(template, variableName))
+            {
+                return;
+            }
+
+            // 变量更新，激活标注文本生命周期计时器
+            _transientUntil = DateTime.UtcNow.AddSeconds(_transientDurationSeconds);
+            isTransientActive = true;
+            _wasTransientActive = true;
         }
 
-        // 检查当前模板是否使用了这个被更新的变量
-        if (!variableService.UsesVariable(template, variableName))
-        {
-            return;
-        }
-
-        // 避让检测：若正在打字或处于避让倒计时，暂不强制打断避让
+        // 2. 锁外部执行避让检测
         if (IsInAvoidance(out _, out _))
         {
             return;
         }
 
-        string rendered = variableService.Render(template);
+        // 3. 锁外部完成模板预处理与变量渲染拼接
+        string processedTemplate = PrepareTemplateForRender(template, isTransientActive);
+        string rendered = variableService.Render(processedTemplate);
         if (string.IsNullOrWhiteSpace(rendered)) return;
 
         try
@@ -229,14 +282,15 @@ public class PersistentTextService : IDisposable
 
     /// <summary>
     /// 用户在界面上点击【提交】按钮时调用：
-    /// 1. 强制激活常驻状态并更新模板文本；
-    /// 2. 强力终止所有打字动画与心跳；
-    /// 3. 立即使用变量池渲染并向 VRChat 推送文本气泡；
-    /// 4. 启动常驻定时保活循环。
+    /// 1. 锁内维持提交状态与瞬态激活时限；
+    /// 2. 锁外完成文本拼接并立即推送至 VRChat；
+    /// 3. 启动常驻定时保活循环。
     /// </summary>
     public async Task<bool> SubmitAsync(string template, VariableService variableService, OscService oscService, SettingsService settingsService)
     {
         template = template?.Trim() ?? string.Empty;
+
+        // 1. 锁内维护提交状态
         lock (_lock)
         {
             IsEnabled = !string.IsNullOrWhiteSpace(template);
@@ -244,6 +298,10 @@ public class PersistentTextService : IDisposable
             _lastInGameSentTime = DateTime.MinValue;
             _lastInGameTypingTime = DateTime.MinValue;
             _pausedUntil = DateTime.MinValue;
+
+            // 提交时默认激活瞬态展示
+            _transientUntil = DateTime.UtcNow.AddSeconds(_transientDurationSeconds);
+            _wasTransientActive = true;
         }
 
         settingsService.SuppressTypingAnimation();
@@ -256,9 +314,11 @@ public class PersistentTextService : IDisposable
             return false;
         }
 
-        string rendered = variableService.Render(template);
+        // 2. 锁外完成文本预处理与拼接
+        string processed = PrepareTemplateForRender(template, isTransientActive: true);
+        string rendered = variableService.Render(processed);
 
-        // 立即强制向 VRChat 推送（双保险确保无打字动画）
+        // 立即强制向 VRChat 推送
         await oscService.SendTypingAsync(false, recordLog: false);
         await Task.Delay(40);
         bool sent = await oscService.SendChatboxMessageAsync(rendered, direct: true, playSound: false, recordLog: false);
@@ -279,6 +339,8 @@ public class PersistentTextService : IDisposable
         lock (_lock)
         {
             CustomText = string.Empty;
+            _transientUntil = DateTime.MinValue;
+            _wasTransientActive = false;
             StopLoopInternal();
         }
         await oscService.SendChatboxMessageAsync(string.Empty, direct: true, playSound: false, recordLog: false);
@@ -307,21 +369,43 @@ public class PersistentTextService : IDisposable
                         if (token.IsCancellationRequested) break;
 
                         string template;
+                        bool isTransientActive;
+                        bool justExpired = false;
+
+                        // 1. 锁内仅读取状态快照与判定过期过渡
                         lock (_lock)
                         {
                             if (!IsEnabled || string.IsNullOrWhiteSpace(CustomText)) continue;
                             template = CustomText;
+
+                            isTransientActive = DateTime.UtcNow < _transientUntil;
+                            // 检测是否刚好从激活状态转为过期状态
+                            if (_wasTransientActive && !isTransientActive)
+                            {
+                                justExpired = true;
+                            }
+                            _wasTransientActive = isTransientActive;
                         }
 
-                        // 综合避让检测
+                        // 2. 锁外执行避让检测
                         if (IsInAvoidance(out _, out _))
                         {
                             continue;
                         }
 
-                        // 使用最新变量动态渲染
-                        string textToSend = variableService.Render(template);
-                        if (string.IsNullOrWhiteSpace(textToSend)) continue;
+                        // 3. 锁外完成文本拼接与渲染
+                        string processed = PrepareTemplateForRender(template, isTransientActive);
+                        string textToSend = variableService.Render(processed);
+
+                        // 如果常驻内容在移除 [] 之后变为空，且刚好过期，则清口气泡
+                        if (string.IsNullOrWhiteSpace(textToSend))
+                        {
+                            if (justExpired)
+                            {
+                                await oscService.SendChatboxMessageAsync(string.Empty, direct: true, playSound: false, recordLog: false);
+                            }
+                            continue;
+                        }
 
                         // 循环保活推送：无声、不记录刷屏日志、绝对不发送打字动画
                         await oscService.SendChatboxMessageAsync(textToSend, direct: true, playSound: false, recordLog: false);

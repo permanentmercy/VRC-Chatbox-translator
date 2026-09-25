@@ -216,6 +216,20 @@ public partial class SettingsService
         }
     }
 
+    public int TransientTextDurationSeconds
+    {
+        get => Config.TransientTextDurationSeconds;
+        set
+        {
+            if (Config.TransientTextDurationSeconds != value)
+            {
+                Config.TransientTextDurationSeconds = value;
+                PersistentTextService.TransientDurationSeconds = value;
+                SaveConfigDebounced();
+            }
+        }
+    }
+
     public bool IsHotkeyEnabled
     {
         get => Config.IsHotkeyEnabled;
@@ -429,6 +443,7 @@ public partial class SettingsService
         VrcInGameGuard.IsEnabled = Config.InGameAvoidanceEnabled;
         PersistentTextService.EnableInGameAvoidance = Config.InGameAvoidanceEnabled;
         PersistentTextService.AvoidanceSeconds = Config.InGameAvoidanceSeconds;
+        PersistentTextService.TransientDurationSeconds = Config.TransientTextDurationSeconds;
         VrcInGameGuard.Start();
 
         InboundService.MessageReceived += (text, source) =>
