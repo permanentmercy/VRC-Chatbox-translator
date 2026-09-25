@@ -2,12 +2,12 @@
 #pragma warning disable CS0618
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
-using NAudio.Wave.SampleProviders;
 
 namespace VrcChatboxDemo.Services;
 
@@ -39,7 +39,7 @@ public class AudioSlidingBuffer
         }
     }
 
-    public float[]? GetLatestSnapshot(int minSamples = 16000)
+    public float[]? GetLatestSnapshot(int minSamples = 8000)
     {
         lock (_sync)
         {
@@ -68,10 +68,10 @@ public class AudioSlidingBuffer
 /// Windows 11 实时字幕语言自动切换管理器 (基于 Ear 音频语种识别模型)
 /// 核心特性：
 /// 1. 采用 Ear 声学轻量识别模型，直接对音频流抽取特征，即使当前字幕语言完全听不懂也能准确判别；
-/// 2. 使用最新音频环形滑动窗口 (Ring Buffer)，杜绝 FIFO 队列积压延迟，每次检测取当下最新的 2.5 秒真实声音；
-/// 3. 支持用户自定义定时检测频率 (1s, 2s, 3s, 5s)；
-/// 4. 防抖机制：连续 3 次确认不同语种，才自动执行后台字幕语言切换；
-/// 5. 实时向上层抛出检测状态、语种名称、音量能量及命中进度 (如: 2/3 次)。
+/// 2. 高性能直接 PCM 线性降采样至 16kHz float，杜绝任何外部 Provider 套娃阻塞；
+/// 3. 支持系统默认智能双流监听 (同时监听扬声器 Loopback 游戏/视频声音 + 麦克风用户说话声音)；
+/// 4. 环形滑动窗口零积压零延迟，实时反映当前人声状态与语种判定；
+/// 5. 防抖机制：连续 3 次确认不同语种，才自动执行后台字幕语言切换。
 /// </summary>
 public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 {
@@ -83,9 +83,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
     private int _intervalSeconds = 2;
     private CancellationTokenSource? _workerCts;
 
-    private IWaveIn? _audioCapture;
-    private BufferedWaveProvider? _bufferedWaveProvider;
-    private SampleToWaveProvider16? _wave16;
+    private readonly List<IWaveIn> _activeCaptures = new();
     private readonly AudioSlidingBuffer _slidingBuffer = new(48000); // 3 秒 16kHz float
 
     private string? _candidateCode;
@@ -93,6 +91,9 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
     private const int HitThreshold = 3;
 
     private string _currentStatusText = "待机中";
+    private DateTime _lastAudioTime = DateTime.MinValue;
+    private long _totalSamplesReceived = 0;
+
     private readonly SemaphoreSlim _lock = new(1, 1);
 
     public bool IsEnabled => _isEnabled;
@@ -140,7 +141,6 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                 }
 
                 await StartWorkerInternalAsync();
-                UpdateStatus("Ear 音频语种自动检测已就绪 (等待音频流)", _settingsService.LiveCaptionsLanguageCode, 0, HitThreshold);
             }
             else
             {
@@ -180,27 +180,19 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 
         try
         {
-            _audioCapture = await CreateAudioCaptureAsync();
-
-            _bufferedWaveProvider = new BufferedWaveProvider(_audioCapture.WaveFormat)
-            {
-                DiscardOnBufferOverflow = true,
-                ReadFully = false
-            };
-
-            var sampleProvider = _bufferedWaveProvider.ToSampleProvider();
-            var resampler = new WdlResamplingSampleProvider(sampleProvider, 16000);
-            var mono = resampler.ToMono();
-            _wave16 = new SampleToWaveProvider16(mono);
-
             _slidingBuffer.Clear();
+            _totalSamplesReceived = 0;
+            _lastAudioTime = DateTime.MinValue;
 
-            _audioCapture.DataAvailable += (s, e) =>
+            await InitializeAudioCapturesAsync();
+
+            if (_activeCaptures.Count == 0)
             {
-                _bufferedWaveProvider?.AddSamples(e.Buffer, 0, e.BytesRecorded);
-            };
+                UpdateStatus("未找到可用音频输入或播放设备", _settingsService.LiveCaptionsLanguageCode, 0, HitThreshold);
+                return;
+            }
 
-            _audioCapture.StartRecording();
+            UpdateStatus("Ear 实时监听就绪 (等待声音输入/说话)...", _settingsService.LiveCaptionsLanguageCode, 0, HitThreshold);
         }
         catch (Exception ex)
         {
@@ -212,89 +204,157 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
         _ = Task.Run(() => DetectionLoopAsync(token), token);
     }
 
-    private async Task<IWaveIn> CreateAudioCaptureAsync()
+    private async Task InitializeAudioCapturesAsync()
     {
         string devId = _settingsService.AudioInputDeviceId;
         string procName = _settingsService.TargetAudioProcessName;
 
+        // 1. 指定了进程回路隔离
         if (!string.IsNullOrEmpty(devId) && devId.StartsWith("process:", StringComparison.OrdinalIgnoreCase))
         {
             string target = devId.Substring("process:".Length).Trim();
             if (string.IsNullOrEmpty(target)) target = procName;
             if (string.IsNullOrEmpty(target)) target = "VRChat";
-            return await ProcessLoopbackCapture.CreateAsync(target);
+
+            var plc = await ProcessLoopbackCapture.CreateAsync(target);
+            AttachAndStartCapture(plc);
+            return;
         }
 
         var enumerator = new MMDeviceEnumerator();
-        MMDevice? targetDevice = null;
-        bool isCapture = false;
 
+        // 2. 指定了特定的音频端点设备
         if (!string.IsNullOrEmpty(devId))
         {
             try
             {
-                targetDevice = enumerator.GetDevice(devId);
+                var targetDevice = enumerator.GetDevice(devId);
+                if (targetDevice != null)
+                {
+                    bool isCapture = targetDevice.DataFlow == DataFlow.Capture || AudioDeviceService.IsCaptureEndpoint(targetDevice.ID);
+                    IWaveIn cap = isCapture ? new WasapiCapture(targetDevice) : new WasapiLoopbackCapture(targetDevice);
+                    AttachAndStartCapture(cap);
+                    return;
+                }
             }
-            catch { }
-        }
-
-        if (targetDevice != null)
-        {
-            isCapture = targetDevice.DataFlow == DataFlow.Capture || AudioDeviceService.IsCaptureEndpoint(targetDevice.ID);
-        }
-        else
-        {
-            try
+            catch (Exception ex)
             {
-                targetDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            }
-            catch
-            {
-                targetDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-                isCapture = true;
+                Debug.WriteLine($"[AutoSwitcher] Failed to bind specific device: {ex.Message}");
             }
         }
 
-        if (targetDevice == null)
+        // 3. 系统默认设备：启用智能双流监听 (扬声器/耳机 Loopback + 默认麦克风 Capture)
+        // 这样他人发声与自己说话均能无缝送入语种分析模型，彻底解决单端点静默问题
+        try
         {
-            return new WasapiLoopbackCapture();
+            var defaultRender = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            if (defaultRender != null)
+            {
+                var loopback = new WasapiLoopbackCapture(defaultRender);
+                AttachAndStartCapture(loopback);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[AutoSwitcher] Failed to attach default render loopback: {ex.Message}");
         }
 
-        return isCapture ? new WasapiCapture(targetDevice) : new WasapiLoopbackCapture(targetDevice);
+        try
+        {
+            var defaultCapture = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            if (defaultCapture != null)
+            {
+                var mic = new WasapiCapture(defaultCapture);
+                AttachAndStartCapture(mic);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[AutoSwitcher] Failed to attach default mic capture: {ex.Message}");
+        }
+    }
+
+    private void AttachAndStartCapture(IWaveIn capture)
+    {
+        var fmt = capture.WaveFormat;
+        capture.DataAvailable += (s, e) =>
+        {
+            ProcessIncomingAudio(e.Buffer, e.BytesRecorded, fmt);
+        };
+        capture.StartRecording();
+        _activeCaptures.Add(capture);
+    }
+
+    private void ProcessIncomingAudio(byte[] buffer, int bytesRecorded, WaveFormat format)
+    {
+        if (bytesRecorded <= 0 || buffer == null) return;
+
+        int sampleRate = format.SampleRate;
+        int channels = format.Channels;
+        if (channels <= 0 || sampleRate <= 0) return;
+
+        bool isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat || format.BitsPerSample == 32;
+        int bytesPerSample = format.BitsPerSample / 8;
+        int frameSize = bytesPerSample * channels;
+        if (frameSize <= 0) return;
+
+        int frameCount = bytesRecorded / frameSize;
+        if (frameCount <= 0) return;
+
+        // 快速线性降采样至 16000Hz (如 48kHz -> 16kHz, step = 3.0)
+        double step = (double)sampleRate / 16000.0;
+        int targetSamples = (int)(frameCount / step);
+        if (targetSamples <= 0) return;
+
+        float[] resampled = new float[targetSamples];
+        int outIdx = 0;
+
+        for (double frameIdx = 0; frameIdx < frameCount && outIdx < targetSamples; frameIdx += step)
+        {
+            int f = (int)frameIdx;
+            int frameOffset = f * frameSize;
+
+            float sum = 0f;
+            for (int ch = 0; ch < channels; ch++)
+            {
+                int chOffset = frameOffset + ch * bytesPerSample;
+                if (chOffset + bytesPerSample <= bytesRecorded)
+                {
+                    if (isFloat)
+                    {
+                        sum += BitConverter.ToSingle(buffer, chOffset);
+                    }
+                    else if (bytesPerSample == 2)
+                    {
+                        short s = (short)(buffer[chOffset] | (buffer[chOffset + 1] << 8));
+                        sum += s / 32768f;
+                    }
+                }
+            }
+            resampled[outIdx++] = sum / channels;
+        }
+
+        _slidingBuffer.AddRange(resampled.AsSpan(0, outIdx));
+        Interlocked.Add(ref _totalSamplesReceived, outIdx);
+        _lastAudioTime = DateTime.UtcNow;
     }
 
     private async Task DetectionLoopAsync(CancellationToken ct)
     {
-        byte[] chunk = new byte[8192];
-        float[] convertBuffer = new float[4096];
-
         while (!ct.IsCancellationRequested && _isEnabled)
         {
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(_intervalSeconds), ct);
 
-                if (_wave16 == null) continue;
+                double secondsSinceAudio = (DateTime.UtcNow - _lastAudioTime).TotalSeconds;
 
-                // 1. 一次性彻底排空底层 FIFO 缓冲区中积攒的全部音频数据，避免任何旧数据积压
-                int bytesRead;
-                while ((bytesRead = _wave16.Read(chunk.AsSpan())) > 0)
+                // 提取最近 0.5 ~ 3 秒的真实音频快照
+                float[]? snapshot = _slidingBuffer.GetLatestSnapshot(minSamples: 8000);
+                if (snapshot == null || secondsSinceAudio > 3.5)
                 {
-                    int samplesInChunk = bytesRead / 2;
-                    for (int i = 0; i < samplesInChunk; i++)
-                    {
-                        short s = (short)(chunk[i * 2] | (chunk[i * 2 + 1] << 8));
-                        convertBuffer[i] = s / 32768f;
-                    }
-                    _slidingBuffer.AddRange(convertBuffer.AsSpan(0, samplesInChunk));
-                }
-
-                // 2. 提取最近 1.0 ~ 3 秒的真实音频快照
-                float[]? snapshot = _slidingBuffer.GetLatestSnapshot(minSamples: 16000);
-                if (snapshot == null)
-                {
-                    UpdateStatus("Ear 实时监听就绪 (等待声音输入)...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
-                    continue; // 声音样本不足 1 秒，等待累积
+                    UpdateStatus("Ear 实时监听就绪 (等待声音输入/说话)...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
+                    continue;
                 }
 
                 float currentRms = 0f;
@@ -304,11 +364,11 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                 {
                     if (currentRms < 0.0035f)
                     {
-                        UpdateStatus("Ear 实时监听中 (当前静音/低音量)", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
+                        UpdateStatus($"Ear 监听中 (音量偏低 RMS: {currentRms:F3})", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     }
                     else
                     {
-                        UpdateStatus($"Ear 正在分析人声 (音量 RMS: {currentRms:F3})...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
+                        UpdateStatus($"Ear 正在分析声音特征 (音量 RMS: {currentRms:F3})...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     }
                     continue;
                 }
@@ -364,6 +424,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
             catch (Exception ex)
             {
                 Debug.WriteLine($"[AutoSwitcher] Loop error: {ex.Message}");
+                UpdateStatus($"检测异常: {ex.Message}", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
             }
         }
     }
@@ -378,17 +439,20 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
         }
         catch { }
 
-        try
+        foreach (var cap in _activeCaptures)
         {
-            _audioCapture?.StopRecording();
-            _audioCapture?.Dispose();
-            _audioCapture = null;
+            try
+            {
+                cap.StopRecording();
+                cap.Dispose();
+            }
+            catch { }
         }
-        catch { }
+        _activeCaptures.Clear();
 
-        _bufferedWaveProvider = null;
-        _wave16 = null;
         _slidingBuffer.Clear();
+        _totalSamplesReceived = 0;
+        _lastAudioTime = DateTime.MinValue;
     }
 
     public void Dispose()
