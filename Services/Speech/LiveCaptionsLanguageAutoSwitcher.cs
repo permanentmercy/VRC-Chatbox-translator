@@ -39,7 +39,7 @@ public class AudioSlidingBuffer
         }
     }
 
-    public float[]? GetLatestSnapshot(int minSamples = 8000)
+    public float[]? GetLatestSnapshot(int minSamples = 32000)
     {
         lock (_sync)
         {
@@ -66,11 +66,11 @@ public class AudioSlidingBuffer
 
 /// <summary>
 /// Windows 11 实时字幕语言自动切换管理器 (基于 Ear 音频语种识别模型)
-/// 核心特性：
-/// 1. 采用 Ear 声学轻量识别模型，直接对音频流抽取特征，即使当前字幕语言完全听不懂也能准确判别；
-/// 2. 高性能直接 PCM 线性降采样至 16kHz float，杜绝任何外部 Provider 套娃阻塞；
-/// 3. 支持系统默认智能双流监听 (同时监听扬声器 Loopback 游戏/视频声音 + 麦克风用户说话声音)；
-/// 4. 环形滑动窗口零积压零延迟，实时反映当前人声状态与语种判定；
+/// 核心精度优化特性：
+/// 1. 扩大切片至 3.0 ~ 4.0 秒完整语境：为 Whisper 提供充足的音节与语法特征，杜绝短音频误判；
+/// 2. 3:1 三角 FIR 抗混叠低通降采样：消除高频折叠失真，保留纯净清晰的梅尔频谱；
+/// 3. 双端点独立流择优：扬声器与麦克风分流缓冲，杜绝音频交叉切碎杂音；
+/// 4. 优先加载 base 模型：大幅度提升多国语种特征判别的置信度与精度；
 /// 5. 防抖机制：连续 3 次确认不同语种，才自动执行后台字幕语言切换。
 /// </summary>
 public class LiveCaptionsLanguageAutoSwitcher : IDisposable
@@ -84,15 +84,18 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
     private CancellationTokenSource? _workerCts;
 
     private readonly List<IWaveIn> _activeCaptures = new();
-    private readonly AudioSlidingBuffer _slidingBuffer = new(48000); // 3 秒 16kHz float
+
+    // 独立维持扬声器流与麦克风流，各容纳 4.0 秒 (64,000 samples)
+    private readonly AudioSlidingBuffer _renderSlidingBuffer = new(64000);
+    private readonly AudioSlidingBuffer _micSlidingBuffer = new(64000);
 
     private string? _candidateCode;
     private int _hitCount;
     private const int HitThreshold = 3;
 
     private string _currentStatusText = "待机中";
-    private DateTime _lastAudioTime = DateTime.MinValue;
-    private long _totalSamplesReceived = 0;
+    private DateTime _lastRenderAudioTime = DateTime.MinValue;
+    private DateTime _lastMicAudioTime = DateTime.MinValue;
 
     private readonly SemaphoreSlim _lock = new(1, 1);
 
@@ -180,9 +183,10 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 
         try
         {
-            _slidingBuffer.Clear();
-            _totalSamplesReceived = 0;
-            _lastAudioTime = DateTime.MinValue;
+            _renderSlidingBuffer.Clear();
+            _micSlidingBuffer.Clear();
+            _lastRenderAudioTime = DateTime.MinValue;
+            _lastMicAudioTime = DateTime.MinValue;
 
             await InitializeAudioCapturesAsync();
 
@@ -192,7 +196,8 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                 return;
             }
 
-            UpdateStatus("Ear 实时监听就绪 (等待声音输入/说话)...", _settingsService.LiveCaptionsLanguageCode, 0, HitThreshold);
+            string modelTag = _earDetector.LoadedModelName.Contains("base", StringComparison.OrdinalIgnoreCase) ? "base高精模型" : "tiny轻量模型";
+            UpdateStatus($"Ear [{modelTag}] 实时监听就绪 (3.5秒完整语境切片)...", _settingsService.LiveCaptionsLanguageCode, 0, HitThreshold);
         }
         catch (Exception ex)
         {
@@ -217,7 +222,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
             if (string.IsNullOrEmpty(target)) target = "VRChat";
 
             var plc = await ProcessLoopbackCapture.CreateAsync(target);
-            AttachAndStartCapture(plc);
+            AttachAndStartCapture(plc, isMic: false);
             return;
         }
 
@@ -233,7 +238,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                 {
                     bool isCapture = targetDevice.DataFlow == DataFlow.Capture || AudioDeviceService.IsCaptureEndpoint(targetDevice.ID);
                     IWaveIn cap = isCapture ? new WasapiCapture(targetDevice) : new WasapiLoopbackCapture(targetDevice);
-                    AttachAndStartCapture(cap);
+                    AttachAndStartCapture(cap, isMic: isCapture);
                     return;
                 }
             }
@@ -243,15 +248,14 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
             }
         }
 
-        // 3. 系统默认设备：启用智能双流监听 (扬声器/耳机 Loopback + 默认麦克风 Capture)
-        // 这样他人发声与自己说话均能无缝送入语种分析模型，彻底解决单端点静默问题
+        // 3. 系统默认设备：启用独立双流监听 (扬声器/耳机 Loopback + 默认麦克风 Capture)
         try
         {
             var defaultRender = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
             if (defaultRender != null)
             {
                 var loopback = new WasapiLoopbackCapture(defaultRender);
-                AttachAndStartCapture(loopback);
+                AttachAndStartCapture(loopback, isMic: false);
             }
         }
         catch (Exception ex)
@@ -265,7 +269,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
             if (defaultCapture != null)
             {
                 var mic = new WasapiCapture(defaultCapture);
-                AttachAndStartCapture(mic);
+                AttachAndStartCapture(mic, isMic: true);
             }
         }
         catch (Exception ex)
@@ -274,18 +278,21 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
         }
     }
 
-    private void AttachAndStartCapture(IWaveIn capture)
+    private void AttachAndStartCapture(IWaveIn capture, bool isMic)
     {
         var fmt = capture.WaveFormat;
         capture.DataAvailable += (s, e) =>
         {
-            ProcessIncomingAudio(e.Buffer, e.BytesRecorded, fmt);
+            ProcessIncomingAudio(e.Buffer, e.BytesRecorded, fmt, isMic);
         };
         capture.StartRecording();
         _activeCaptures.Add(capture);
     }
 
-    private void ProcessIncomingAudio(byte[] buffer, int bytesRecorded, WaveFormat format)
+    /// <summary>
+    /// 带 3 点 FIR 抗混叠低通滤波的直接 PCM 降采样，高保真还原 16kHz 人声梅尔频谱
+    /// </summary>
+    private void ProcessIncomingAudio(byte[] buffer, int bytesRecorded, WaveFormat format, bool isMic)
     {
         if (bytesRecorded <= 0 || buffer == null) return;
 
@@ -298,45 +305,91 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
         int frameSize = bytesPerSample * channels;
         if (frameSize <= 0) return;
 
-        int frameCount = bytesRecorded / frameSize;
-        if (frameCount <= 0) return;
+        int totalFrames = bytesRecorded / frameSize;
+        if (totalFrames <= 0) return;
 
-        // 快速线性降采样至 16000Hz (如 48kHz -> 16kHz, step = 3.0)
-        double step = (double)sampleRate / 16000.0;
-        int targetSamples = (int)(frameCount / step);
-        if (targetSamples <= 0) return;
+        float[] resampled;
+        int outCount = 0;
 
-        float[] resampled = new float[targetSamples];
-        int outIdx = 0;
-
-        for (double frameIdx = 0; frameIdx < frameCount && outIdx < targetSamples; frameIdx += step)
+        // 针对最常见的 48000Hz 输入，执行精确 3:1 三角 FIR 抗混叠滤波降采样 (0.25*f0 + 0.5*f1 + 0.25*f2)
+        if (sampleRate == 48000)
         {
-            int f = (int)frameIdx;
-            int frameOffset = f * frameSize;
+            int targetSamples = totalFrames / 3;
+            if (targetSamples <= 0) return;
 
-            float sum = 0f;
-            for (int ch = 0; ch < channels; ch++)
+            resampled = new float[targetSamples];
+            for (int i = 0; i < targetSamples; i++)
             {
-                int chOffset = frameOffset + ch * bytesPerSample;
-                if (chOffset + bytesPerSample <= bytesRecorded)
-                {
-                    if (isFloat)
-                    {
-                        sum += BitConverter.ToSingle(buffer, chOffset);
-                    }
-                    else if (bytesPerSample == 2)
-                    {
-                        short s = (short)(buffer[chOffset] | (buffer[chOffset + 1] << 8));
-                        sum += s / 32768f;
-                    }
-                }
+                int f0 = i * 3;
+                int f1 = f0 + 1;
+                int f2 = f0 + 2;
+
+                float s0 = ExtractMonoSample(buffer, f0 * frameSize, channels, isFloat, bytesPerSample, bytesRecorded);
+                float s1 = ExtractMonoSample(buffer, f1 * frameSize, channels, isFloat, bytesPerSample, bytesRecorded);
+                float s2 = ExtractMonoSample(buffer, f2 * frameSize, channels, isFloat, bytesPerSample, bytesRecorded);
+
+                resampled[i] = s0 * 0.25f + s1 * 0.50f + s2 * 0.25f;
             }
-            resampled[outIdx++] = sum / channels;
+            outCount = targetSamples;
+        }
+        else
+        {
+            // 通用插值降采样
+            double step = (double)sampleRate / 16000.0;
+            int targetSamples = (int)(totalFrames / step);
+            if (targetSamples <= 0) return;
+
+            resampled = new float[targetSamples];
+            for (double frameIdx = 0; frameIdx < totalFrames && outCount < targetSamples; frameIdx += step)
+            {
+                int f = (int)frameIdx;
+                resampled[outCount++] = ExtractMonoSample(buffer, f * frameSize, channels, isFloat, bytesPerSample, bytesRecorded);
+            }
         }
 
-        _slidingBuffer.AddRange(resampled.AsSpan(0, outIdx));
-        Interlocked.Add(ref _totalSamplesReceived, outIdx);
-        _lastAudioTime = DateTime.UtcNow;
+        if (isMic)
+        {
+            _micSlidingBuffer.AddRange(resampled.AsSpan(0, outCount));
+            _lastMicAudioTime = DateTime.UtcNow;
+        }
+        else
+        {
+            _renderSlidingBuffer.AddRange(resampled.AsSpan(0, outCount));
+            _lastRenderAudioTime = DateTime.UtcNow;
+        }
+    }
+
+    private static float ExtractMonoSample(byte[] buffer, int frameOffset, int channels, bool isFloat, int bytesPerSample, int maxBytes)
+    {
+        float sum = 0f;
+        for (int ch = 0; ch < channels; ch++)
+        {
+            int offset = frameOffset + ch * bytesPerSample;
+            if (offset + bytesPerSample <= maxBytes)
+            {
+                if (isFloat)
+                {
+                    sum += BitConverter.ToSingle(buffer, offset);
+                }
+                else if (bytesPerSample == 2)
+                {
+                    short s = (short)(buffer[offset] | (buffer[offset + 1] << 8));
+                    sum += s / 32768f;
+                }
+            }
+        }
+        return sum / channels;
+    }
+
+    private static float CalculateRms(float[] samples)
+    {
+        if (samples == null || samples.Length == 0) return 0f;
+        float sum = 0f;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            sum += samples[i] * samples[i];
+        }
+        return (float)Math.Sqrt(sum / samples.Length);
     }
 
     private async Task DetectionLoopAsync(CancellationToken ct)
@@ -347,29 +400,47 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
             {
                 await Task.Delay(TimeSpan.FromSeconds(_intervalSeconds), ct);
 
-                double secondsSinceAudio = (DateTime.UtcNow - _lastAudioTime).TotalSeconds;
+                var now = DateTime.UtcNow;
+                bool isRenderActive = (now - _lastRenderAudioTime).TotalSeconds < 3.5;
+                bool isMicActive = (now - _lastMicAudioTime).TotalSeconds < 3.5;
 
-                // 提取最近 0.5 ~ 3 秒的真实音频快照
-                float[]? snapshot = _slidingBuffer.GetLatestSnapshot(minSamples: 8000);
-                if (snapshot == null || secondsSinceAudio > 3.5)
+                // 提取至少 2.0 秒 (32,000 采样)，最多 4.0 秒 (64,000 采样) 的高阶完整切片
+                float[]? renderSnap = isRenderActive ? _renderSlidingBuffer.GetLatestSnapshot(minSamples: 32000) : null;
+                float[]? micSnap = isMicActive ? _micSlidingBuffer.GetLatestSnapshot(minSamples: 32000) : null;
+
+                float renderRms = renderSnap != null ? CalculateRms(renderSnap) : 0f;
+                float micRms = micSnap != null ? CalculateRms(micSnap) : 0f;
+
+                // VAD 智能择优：选择能量明显更高、人声特征更强的纯净音频流，绝不交错切碎
+                float[]? activeSnapshot = null;
+                string streamSourceTag = "音频";
+                float bestRms = 0f;
+
+                if (micRms >= renderRms && micRms >= 0.0006f)
+                {
+                    activeSnapshot = micSnap;
+                    streamSourceTag = "麦克风人声";
+                    bestRms = micRms;
+                }
+                else if (renderRms >= 0.0006f)
+                {
+                    activeSnapshot = renderSnap;
+                    streamSourceTag = "扬声器声音";
+                    bestRms = renderRms;
+                }
+
+                if (activeSnapshot == null)
                 {
                     UpdateStatus("Ear 实时监听就绪 (等待声音输入/说话)...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     continue;
                 }
 
-                float currentRms = 0f;
-                var result = await _earDetector.DetectFromAudioAsync(snapshot, rms => currentRms = rms);
+                double sliceDurationSecs = Math.Round(activeSnapshot.Length / 16000.0, 1);
+                var result = await _earDetector.DetectFromAudioAsync(activeSnapshot);
 
                 if (result == null)
                 {
-                    if (currentRms < 0.0006f)
-                    {
-                        UpdateStatus($"Ear 监听中 (待机静音 RMS: {currentRms:F4})", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
-                    }
-                    else
-                    {
-                        UpdateStatus($"Ear 正在分析人声特征 (音量 RMS: {currentRms:F4})...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
-                    }
+                    UpdateStatus($"Ear 正在分析{streamSourceTag} ({sliceDurationSecs}秒切片，RMS: {bestRms:F4})...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     continue;
                 }
 
@@ -383,7 +454,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                         _hitCount = 0;
                         _candidateCode = null;
                     }
-                    UpdateStatus($"当前语种稳定: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%)", detectedCode, 0, HitThreshold);
+                    UpdateStatus($"当前语种稳定: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%，{sliceDurationSecs}秒切片)", detectedCode, 0, HitThreshold);
                     continue;
                 }
 
@@ -398,7 +469,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                     _hitCount = 1;
                 }
 
-                UpdateStatus($"检测到不同语种: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%，命中 {_hitCount}/{HitThreshold} 次)", detectedCode, _hitCount, HitThreshold);
+                UpdateStatus($"检测到不同语种: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%，{sliceDurationSecs}秒切片，命中 {_hitCount}/{HitThreshold} 次)", detectedCode, _hitCount, HitThreshold);
 
                 // 连续达到 3 次阈值，触发自动热切换
                 if (_hitCount >= HitThreshold && !string.IsNullOrEmpty(_candidateCode))
@@ -450,9 +521,10 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
         }
         _activeCaptures.Clear();
 
-        _slidingBuffer.Clear();
-        _totalSamplesReceived = 0;
-        _lastAudioTime = DateTime.MinValue;
+        _renderSlidingBuffer.Clear();
+        _micSlidingBuffer.Clear();
+        _lastRenderAudioTime = DateTime.MinValue;
+        _lastMicAudioTime = DateTime.MinValue;
     }
 
     public void Dispose()

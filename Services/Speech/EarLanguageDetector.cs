@@ -19,8 +19,10 @@ public class EarLanguageDetector : IDisposable
     private WhisperProcessor? _processor;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private bool _isInitialized;
+    private string _loadedModelName = "ggml-tiny";
 
     public bool IsInitialized => _isInitialized;
+    public string LoadedModelName => _loadedModelName;
 
     public async Task<bool> InitializeAsync()
     {
@@ -32,10 +34,19 @@ public class EarLanguageDetector : IDisposable
             if (_isInitialized) return true;
 
             string baseDir = AppContext.BaseDirectory;
-            string modelPath = Path.Combine(baseDir, "Models", "ggml-tiny.bin");
+            string modelPath = Path.Combine(baseDir, "Models", "ggml-base.bin");
             if (!File.Exists(modelPath))
             {
-                modelPath = Path.Combine(Directory.GetCurrentDirectory(), "Models", "ggml-tiny.bin");
+                modelPath = Path.Combine(Directory.GetCurrentDirectory(), "Models", "ggml-base.bin");
+            }
+
+            if (!File.Exists(modelPath))
+            {
+                modelPath = Path.Combine(baseDir, "Models", "ggml-tiny.bin");
+                if (!File.Exists(modelPath))
+                {
+                    modelPath = Path.Combine(Directory.GetCurrentDirectory(), "Models", "ggml-tiny.bin");
+                }
             }
 
             if (!File.Exists(modelPath))
@@ -43,6 +54,7 @@ public class EarLanguageDetector : IDisposable
                 return false;
             }
 
+            _loadedModelName = Path.GetFileNameWithoutExtension(modelPath);
             SpeechService.EnsureCudaEnvironment();
 
             try
