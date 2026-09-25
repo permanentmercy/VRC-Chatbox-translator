@@ -27,6 +27,7 @@ public partial class SettingsService
     public HotkeyService HotkeyService { get; } = new();
     public SpeechService SpeechService { get; } = new();
     public LiveCaptionsService LiveCaptionsService { get; } = new();
+    public LiveCaptionsLanguageAutoSwitcher LiveCaptionsAutoSwitcher { get; }
     public OllamaService OllamaService { get; } = new();
     public InboundService InboundService { get; } = new();
     public PersistentTextService PersistentTextService { get; } = new();
@@ -94,6 +95,37 @@ public partial class SettingsService
             }
         }
     }
+
+    public bool LiveCaptionsAutoDetectLanguage
+    {
+        get => Config.LiveCaptionsAutoDetectLanguage;
+        set
+        {
+            if (Config.LiveCaptionsAutoDetectLanguage != value)
+            {
+                Config.LiveCaptionsAutoDetectLanguage = value;
+                SaveConfigDebounced();
+                _ = LiveCaptionsAutoSwitcher.SetEnabledAsync(value, Config.LiveCaptionsAutoDetectIntervalSeconds);
+                LiveCaptionsAutoDetectChanged?.Invoke(value);
+            }
+        }
+    }
+
+    public int LiveCaptionsAutoDetectIntervalSeconds
+    {
+        get => Config.LiveCaptionsAutoDetectIntervalSeconds <= 0 ? 2 : Config.LiveCaptionsAutoDetectIntervalSeconds;
+        set
+        {
+            if (Config.LiveCaptionsAutoDetectIntervalSeconds != value)
+            {
+                Config.LiveCaptionsAutoDetectIntervalSeconds = value;
+                SaveConfigDebounced();
+                LiveCaptionsAutoSwitcher.UpdateInterval(value);
+            }
+        }
+    }
+
+    public event Action<bool>? LiveCaptionsAutoDetectChanged;
 
     public string TargetAudioProcessName
     {
@@ -458,6 +490,12 @@ public partial class SettingsService
     private SettingsService()
     {
         LoadConfig();
+
+        LiveCaptionsAutoSwitcher = new LiveCaptionsLanguageAutoSwitcher(LiveCaptionsService);
+        if (Config.LiveCaptionsAutoDetectLanguage)
+        {
+            _ = LiveCaptionsAutoSwitcher.SetEnabledAsync(true, Config.LiveCaptionsAutoDetectIntervalSeconds);
+        }
 
         OscService.MessageSent += OnMessageSent;
 

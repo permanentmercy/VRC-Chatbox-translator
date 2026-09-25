@@ -28,6 +28,8 @@ public sealed partial class SpeechSection : UserControl
         SettingsService.Instance.SpeechStatusUpdated -= OnSpeechStatusUpdated;
         SettingsService.Instance.SpeechRecognitionStateChanged -= OnSpeechRecognitionStateChanged;
         SettingsService.Instance.TargetAudioProcessChanged -= OnTargetAudioProcessChanged;
+        SettingsService.Instance.LiveCaptionsAutoDetectChanged -= OnLiveCaptionsAutoDetectChanged;
+        SettingsService.Instance.LiveCaptionsAutoSwitcher.StatusUpdated -= OnAutoDetectStatusUpdated;
         ProcessLoopbackCapture.ProcessStateChanged -= OnProcessStateChanged;
         StopProcessPollTimer();
     }
@@ -42,6 +44,8 @@ public sealed partial class SpeechSection : UserControl
         s.SpeechStatusUpdated += OnSpeechStatusUpdated;
         s.SpeechRecognitionStateChanged += OnSpeechRecognitionStateChanged;
         s.TargetAudioProcessChanged += OnTargetAudioProcessChanged;
+        s.LiveCaptionsAutoDetectChanged += OnLiveCaptionsAutoDetectChanged;
+        s.LiveCaptionsAutoSwitcher.StatusUpdated += OnAutoDetectStatusUpdated;
         ProcessLoopbackCapture.ProcessStateChanged += OnProcessStateChanged;
 
         InitSpeechEngine(s.SpeechEngine);
@@ -74,6 +78,29 @@ public sealed partial class SpeechSection : UserControl
             if (SpeechSwitch.IsOn != isListening)
             {
                 SpeechSwitch.IsOn = isListening;
+            }
+        });
+    }
+
+    private void OnAutoDetectStatusUpdated(string statusText, string langCode, int hitCount, int threshold)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (AutoDetectStatusText != null)
+            {
+                AutoDetectStatusText.Text = statusText;
+            }
+        });
+    }
+
+    private void OnLiveCaptionsAutoDetectChanged(bool enabled)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            AutoDetectConfigPanel.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+            if (enabled && LiveCaptionsLanguageComboBox.Items.Count > 0)
+            {
+                LiveCaptionsLanguageComboBox.SelectedIndex = 0;
             }
         });
     }
@@ -156,6 +183,15 @@ public sealed partial class SpeechSection : UserControl
     private void InitLiveCaptionsLanguages(string? currentCode)
     {
         LiveCaptionsLanguageComboBox.Items.Clear();
+
+        // 插入自动检测选项作为首项
+        var autoItem = new ComboBoxItem
+        {
+            Content = "[自动检测] 智能定时识别并自动切换语言 (Ear音频模型)",
+            Tag = "auto"
+        };
+        LiveCaptionsLanguageComboBox.Items.Add(autoItem);
+
         var supported = LiveCaptionsService.SupportedLanguages;
         int selectedIdx = 0;
         string target = string.IsNullOrWhiteSpace(currentCode) ? "zh-CN" : currentCode;
@@ -170,13 +206,26 @@ public sealed partial class SpeechSection : UserControl
             };
             LiveCaptionsLanguageComboBox.Items.Add(item);
 
-            if (string.Equals(lang.Code, target, StringComparison.OrdinalIgnoreCase))
+            if (!SettingsService.Instance.LiveCaptionsAutoDetectLanguage &&
+                string.Equals(lang.Code, target, StringComparison.OrdinalIgnoreCase))
             {
-                selectedIdx = i;
+                selectedIdx = i + 1; // +1 因为首项是 auto
             }
         }
 
+        bool isAuto = SettingsService.Instance.LiveCaptionsAutoDetectLanguage;
+        if (isAuto)
+        {
+            selectedIdx = 0;
+            AutoDetectConfigPanel.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            AutoDetectConfigPanel.Visibility = Visibility.Collapsed;
+        }
+
         LiveCaptionsLanguageComboBox.SelectedIndex = selectedIdx;
+        InitAutoDetectInterval(SettingsService.Instance.LiveCaptionsAutoDetectIntervalSeconds);
     }
 
     private void LiveCaptionsLanguageComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -184,8 +233,45 @@ public sealed partial class SpeechSection : UserControl
         if (_isInitializing) return;
         if (LiveCaptionsLanguageComboBox.SelectedItem is ComboBoxItem item && item.Tag is string code)
         {
-            SettingsService.Instance.LiveCaptionsLanguageCode = code;
+            if (string.Equals(code, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                AutoDetectConfigPanel.Visibility = Visibility.Visible;
+                SettingsService.Instance.LiveCaptionsAutoDetectLanguage = true;
+            }
+            else
+            {
+                AutoDetectConfigPanel.Visibility = Visibility.Collapsed;
+                SettingsService.Instance.LiveCaptionsAutoDetectLanguage = false;
+                SettingsService.Instance.LiveCaptionsLanguageCode = code;
+            }
         }
+    }
+
+    private void InitAutoDetectInterval(int intervalSecs)
+    {
+        int selIdx = intervalSecs switch
+        {
+            1 => 0,
+            2 => 1,
+            3 => 2,
+            5 => 3,
+            _ => 1
+        };
+        AutoDetectIntervalComboBox.SelectedIndex = selIdx;
+    }
+
+    private void AutoDetectIntervalComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        int secs = AutoDetectIntervalComboBox.SelectedIndex switch
+        {
+            0 => 1,
+            1 => 2,
+            2 => 3,
+            3 => 5,
+            _ => 2
+        };
+        SettingsService.Instance.LiveCaptionsAutoDetectIntervalSeconds = secs;
     }
 
     private void InitSpeechModel(string? modelType)
@@ -436,7 +522,7 @@ public sealed partial class SpeechSection : UserControl
         if (isRunning)
         {
             if (pid <= 0) AudioProcessService.IsProcessRunning(processName, out pid);
-            ProcessStatusText.Text = $"已连接: {processName} (PID: {pid}) - 纯净隔离监听就绪";
+            ProcessStatusText.Text = $"已连接: {processName} (PID: {pid}) - 隔离监听就绪";
             ProcessStatusText.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorSuccessBrush"];
         }
         else

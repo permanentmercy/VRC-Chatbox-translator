@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Interop.UIAutomationClient;
 
@@ -54,6 +55,9 @@ public partial class LiveCaptionsService
                     return false;
                 }
 
+                GetWindowThreadProcessId(_hWnd, out uint livePid);
+                if (livePid == 0) return false;
+
                 var uia = new CUIAutomation();
                 var windowElement = uia.ElementFromHandle(_hWnd);
                 if (windowElement == null) return false;
@@ -67,7 +71,6 @@ public partial class LiveCaptionsService
                 var settingsBtn = windowElement.FindFirst(TreeScope.TreeScope_Descendants, condSettings);
                 if (settingsBtn == null)
                 {
-                    // 模糊查找 Button 类型
                     var btnCond = uia.CreatePropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_ButtonControlTypeId);
                     var allBtns = windowElement.FindAll(TreeScope.TreeScope_Descendants, btnCond);
                     for (int i = 0; i < allBtns.Length; i++)
@@ -100,94 +103,135 @@ public partial class LiveCaptionsService
                 else
                 {
                     var expPattern = settingsBtn.GetCurrentPattern(UIA_PatternIds.UIA_ExpandCollapsePatternId) as IUIAutomationExpandCollapsePattern;
-                    expPattern?.Expand();
+                    if (expPattern != null) expPattern.Expand();
+                    else SimulateClick(settingsBtn.CurrentBoundingRectangle);
                 }
 
-                await Task.Delay(250);
+                await Task.Delay(300);
 
-                // 3. 在桌面根元素查找弹出的菜单
+                // 3. 在系统全局范围内按 LiveCaptions PID 查找弹出的菜单或浮层元素
                 var root = uia.GetRootElement();
-                var menuCond = uia.CreatePropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_MenuControlTypeId);
-                var menus = root.FindAll(TreeScope.TreeScope_Children, menuCond);
+                var pidCond = uia.CreatePropertyCondition(UIA_PropertyIds.UIA_ProcessIdPropertyId, (int)livePid);
+                var liveElements = root.FindAll(TreeScope.TreeScope_Descendants, pidCond);
 
                 IUIAutomationElement? langMenuItem = null;
-
-                for (int m = 0; m < menus.Length; m++)
+                for (int i = 0; i < liveElements.Length; i++)
                 {
-                    var menuEl = menus.GetElement(m);
-                    var itemCond = uia.CreatePropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_MenuItemControlTypeId);
-                    var items = menuEl.FindAll(TreeScope.TreeScope_Descendants, itemCond);
-
-                    for (int i = 0; i < items.Length; i++)
+                    var el = liveElements.GetElement(i);
+                    string name = el.CurrentName ?? string.Empty;
+                    if (name.Contains("标注语言", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("Caption language", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("语言", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("Language", StringComparison.OrdinalIgnoreCase))
                     {
-                        var it = items.GetElement(i);
-                        string itName = it.CurrentName ?? string.Empty;
-                        if (itName.Contains("标注语言", StringComparison.OrdinalIgnoreCase) ||
-                            itName.Contains("Caption language", StringComparison.OrdinalIgnoreCase) ||
-                            itName.Contains("语言", StringComparison.OrdinalIgnoreCase) ||
-                            itName.Contains("Language", StringComparison.OrdinalIgnoreCase))
-                        {
-                            langMenuItem = it;
-                            break;
-                        }
+                        langMenuItem = el;
+                        break;
                     }
-                    if (langMenuItem != null) break;
                 }
 
-                if (langMenuItem != null)
+                if (langMenuItem == null)
                 {
-                    // 展开“标注语言”子菜单
-                    var langExp = langMenuItem.GetCurrentPattern(UIA_PatternIds.UIA_ExpandCollapsePatternId) as IUIAutomationExpandCollapsePattern;
-                    langExp?.Expand();
+                    StatusChanged?.Invoke("未在弹出菜单中定位到【标注语言】项");
+                    SendEscKey();
+                    return false;
+                }
 
-                    var langInv = langMenuItem.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) as IUIAutomationInvokePattern;
-                    langInv?.Invoke();
+                // 4. 展开“标注语言”子菜单
+                bool subMenuTriggered = false;
+                var langExp = langMenuItem.GetCurrentPattern(UIA_PatternIds.UIA_ExpandCollapsePatternId) as IUIAutomationExpandCollapsePattern;
+                if (langExp != null)
+                {
+                    langExp.Expand();
+                    subMenuTriggered = true;
+                }
 
-                    await Task.Delay(250);
+                var langInv = langMenuItem.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) as IUIAutomationInvokePattern;
+                if (langInv != null)
+                {
+                    langInv.Invoke();
+                    subMenuTriggered = true;
+                }
 
-                    // 4. 在展开的子菜单中查找目标语言
-                    var allMenuItems = root.FindAll(TreeScope.TreeScope_Descendants,
-                        uia.CreatePropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_MenuItemControlTypeId));
+                if (!subMenuTriggered)
+                {
+                    SimulateClick(langMenuItem.CurrentBoundingRectangle);
+                }
 
-                    IUIAutomationElement? targetLangItem = null;
-                    for (int i = 0; i < allMenuItems.Length; i++)
+                await Task.Delay(300);
+
+                // 5. 在展开的子菜单中重新扫描 PID 对应的元素以定位目标语言
+                liveElements = root.FindAll(TreeScope.TreeScope_Descendants, pidCond);
+                IUIAutomationElement? targetLangItem = null;
+
+                for (int i = 0; i < liveElements.Length; i++)
+                {
+                    var el = liveElements.GetElement(i);
+                    string name = el.CurrentName ?? string.Empty;
+                    if (name.Contains(targetLang.MatchKeyword, StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains(targetLang.DisplayName, StringComparison.OrdinalIgnoreCase) ||
+                        (!string.IsNullOrEmpty(targetLang.Code) && name.Contains(targetLang.Code, StringComparison.OrdinalIgnoreCase)))
                     {
-                        var it = allMenuItems.GetElement(i);
-                        string itName = it.CurrentName ?? string.Empty;
-                        if (itName.Contains(targetLang.MatchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                            itName.Contains(targetLang.DisplayName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            targetLangItem = it;
-                            break;
-                        }
+                        targetLangItem = el;
+                        break;
                     }
+                }
 
-                    if (targetLangItem != null)
+                if (targetLangItem != null)
+                {
+                    var targetInv = targetLangItem.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) as IUIAutomationInvokePattern;
+                    if (targetInv != null)
                     {
-                        var targetInv = targetLangItem.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) as IUIAutomationInvokePattern;
-                        targetInv?.Invoke();
-
+                        targetInv.Invoke();
+                    }
+                    else
+                    {
                         var targetSel = targetLangItem.GetCurrentPattern(UIA_PatternIds.UIA_SelectionItemPatternId) as IUIAutomationSelectionItemPattern;
-                        targetSel?.Select();
-
-                        await Task.Delay(100);
-                        StatusChanged?.Invoke($"Windows 实时字幕语言已切换为: {targetLang.DisplayName}");
-                        return true;
+                        if (targetSel != null) targetSel.Select();
+                        else SimulateClick(targetLangItem.CurrentBoundingRectangle);
                     }
+
+                    await Task.Delay(150);
+                    SendEscKey(); // 确保菜单关闭
+
+                    StatusChanged?.Invoke($"Windows 实时字幕语言已切换为: {targetLang.DisplayName}");
+                    return true;
                 }
 
-                // 关闭可能遗留的菜单（再次点击设置按钮或按 ESC）
-                try { invokePattern?.Invoke(); } catch { }
+                // 退出并关闭遗留的弹出菜单
+                SendEscKey();
+                SendEscKey();
 
-                StatusChanged?.Invoke($"未在实时字幕菜单中匹配到语言: {targetLang.DisplayName}，可能系统尚未下载该离线语言包");
+                StatusChanged?.Invoke($"未在实时字幕菜单中匹配到语言: {targetLang.DisplayName}，可能系统尚未下载该语言包");
                 return false;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"[LiveCaptions] SwitchLanguage failed: {ex.Message}");
                 StatusChanged?.Invoke($"切换实时字幕语言出错: {ex.Message}");
+                try { SendEscKey(); } catch { }
                 return false;
             }
         });
+    }
+
+    private static void SimulateClick(tagRECT rect)
+    {
+        if (rect.right > rect.left && rect.bottom > rect.top)
+        {
+            int cx = (rect.left + rect.right) / 2;
+            int cy = (rect.top + rect.bottom) / 2;
+            SetCursorPos(cx, cy);
+            Thread.Sleep(40);
+            mouse_event(MOUSEEVENTF_LEFTDOWN, cx, cy, 0, UIntPtr.Zero);
+            Thread.Sleep(30);
+            mouse_event(MOUSEEVENTF_LEFTUP, cx, cy, 0, UIntPtr.Zero);
+        }
+    }
+
+    private static void SendEscKey()
+    {
+        keybd_event(VK_ESCAPE, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(30);
+        keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
     }
 }

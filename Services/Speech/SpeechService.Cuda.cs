@@ -97,7 +97,7 @@ public partial class SpeechService
         return false;
     }
 
-    private static void EnsureCudaEnvironment()
+    public static void EnsureCudaEnvironment()
     {
         if (_cudaEnvironmentConfigured) return;
         _cudaEnvironmentConfigured = true;

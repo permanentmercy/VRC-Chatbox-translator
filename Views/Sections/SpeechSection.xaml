@@ -135,6 +135,31 @@
                                       ToolTipService.ToolTip="勾选后，开启时自动将系统自带的黑底字幕窗口最小化，避免遮挡视线" />
                         </StackPanel>
                     </Grid>
+
+                    <!-- Ear 自动语种检测参数与实时状态面板 -->
+                    <StackPanel x:Name="AutoDetectConfigPanel" Spacing="8" Margin="0,4,0,0" Visibility="Collapsed">
+                        <Grid ColumnSpacing="20" Width="640" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="300" />
+                                <ColumnDefinition Width="320" />
+                            </Grid.ColumnDefinitions>
+
+                            <ComboBox x:Name="AutoDetectIntervalComboBox" Header="语种检测采样频率"
+                                      Width="300" HorizontalAlignment="Left"
+                                      SelectionChanged="AutoDetectIntervalComboBox_SelectionChanged"
+                                      ToolTipService.ToolTip="选择后台 Ear 音频模型对说话人声音进行语种特征判别的采样检测周期">
+                                <ComboBoxItem Content="1 秒 (高敏反应)" Tag="1" />
+                                <ComboBoxItem Content="2 秒 (标准推荐)" Tag="2" />
+                                <ComboBoxItem Content="3 秒" Tag="3" />
+                                <ComboBoxItem Content="5 秒 (长句稳定)" Tag="5" />
+                            </ComboBox>
+
+                            <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Spacing="2" Margin="0,0,0,4">
+                                <TextBlock Text="Ear 实时检测状态" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock x:Name="AutoDetectStatusText" Text="待机中" Style="{StaticResource CaptionTextBlockStyle}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- 统一引擎状态 -->
@@ -151,14 +176,14 @@
                 BorderThickness="1" CornerRadius="8" Padding="18">
             <StackPanel Spacing="14">
                 <TextBlock Text="音频输入与目标进程隔离" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-                <TextBlock Text="支持监听耳机/扬声器中其他玩家的声音 (Loopback)，或直接通过麦克风拾音；支持【进程回路隔离】仅抓取指定游戏/应用发出的声音并彻底过滤背景音乐杂音" 
+                <TextBlock Text="支持监听耳机/扬声器中其他玩家的声音 (Loopback)，或直接通过麦克风拾音；支持[进程回路隔离]仅抓取指定游戏/应用发出的声音并彻底过滤背景音乐杂音" 
                            Style="{StaticResource CaptionTextBlockStyle}" 
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
                 <!-- 针对 Windows 11 实时字幕模式下的提示信息 -->
                 <InfoBar x:Name="LiveCaptionsAudioHintInfoBar" IsOpen="False" IsClosable="False" Severity="Informational"
                          Title="Windows 实时字幕限制提示"
-                         Message="Windows 11 实时字幕由系统内置引擎驱动，微软原生仅监听全局默认扬声器或麦克风。若需使用下方的【单进程音频隔离】彻底过滤音乐与外部杂音，请在上方将识别引擎切换为【Whisper 本地 AI 模型】。" />
+                         Message="Windows 11 实时字幕由系统内置引擎驱动，微软原生仅监听全局默认扬声器或麦克风。若需使用下方的[单进程音频隔离]彻底过滤音乐与外部杂音，请在上方将识别引擎切换为[Whisper 本地 AI 模型]。" />
 
                 <!-- 固定宽度的设备选择组，杜绝重排抖动 -->
                 <Grid ColumnSpacing="8" Width="480" HorizontalAlignment="Left">
