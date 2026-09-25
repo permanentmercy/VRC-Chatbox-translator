@@ -234,6 +234,10 @@ public sealed partial class SpeechSection : UserControl
 
         LiveCaptionsLanguageComboBox.SelectedIndex = selectedIdx;
         InitAutoDetectInterval(SettingsService.Instance.LiveCaptionsAutoDetectIntervalSeconds);
+        if (AutoDetectStatusText != null)
+        {
+            AutoDetectStatusText.Text = SettingsService.Instance.LiveCaptionsAutoSwitcher.CurrentStatusText;
+        }
     }
 
     private void LiveCaptionsLanguageComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -245,6 +249,10 @@ public sealed partial class SpeechSection : UserControl
             {
                 AutoDetectConfigPanel.Visibility = Visibility.Visible;
                 SettingsService.Instance.LiveCaptionsAutoDetectLanguage = true;
+                if (AutoDetectStatusText != null)
+                {
+                    AutoDetectStatusText.Text = SettingsService.Instance.LiveCaptionsAutoSwitcher.CurrentStatusText;
+                }
             }
             else
             {

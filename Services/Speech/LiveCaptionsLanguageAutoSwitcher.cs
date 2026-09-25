@@ -76,6 +76,7 @@ public class AudioSlidingBuffer
 public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 {
     private readonly LiveCaptionsService _liveCaptionsService;
+    private readonly SettingsService _settingsService;
     private readonly EarLanguageDetector _earDetector = new();
 
     private bool _isEnabled;
@@ -91,19 +92,28 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
     private int _hitCount;
     private const int HitThreshold = 3;
 
+    private string _currentStatusText = "待机中";
     private readonly SemaphoreSlim _lock = new(1, 1);
 
     public bool IsEnabled => _isEnabled;
     public int HitCount => _hitCount;
     public string? CandidateLanguageCode => _candidateCode;
     public int IntervalSeconds => _intervalSeconds;
+    public string CurrentStatusText => _currentStatusText;
 
     public event Action<string, string, int, int>? StatusUpdated; // (statusText, langCode, hitCount, threshold)
     public event Action<string, string>? AutoSwitchTriggered;      // (langCode, langName)
 
-    public LiveCaptionsLanguageAutoSwitcher(LiveCaptionsService liveCaptionsService)
+    public LiveCaptionsLanguageAutoSwitcher(LiveCaptionsService liveCaptionsService, SettingsService settingsService)
     {
         _liveCaptionsService = liveCaptionsService;
+        _settingsService = settingsService;
+    }
+
+    private void UpdateStatus(string statusText, string langCode, int hitCount, int threshold)
+    {
+        _currentStatusText = statusText;
+        StatusUpdated?.Invoke(statusText, langCode, hitCount, threshold);
     }
 
     public async Task SetEnabledAsync(bool enabled, int intervalSeconds = 2)
@@ -120,21 +130,21 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 
             if (_isEnabled)
             {
-                StatusUpdated?.Invoke("正在加载 Ear 音频语种识别模型...", string.Empty, 0, HitThreshold);
+                UpdateStatus("正在加载 Ear 音频语种识别模型...", string.Empty, 0, HitThreshold);
                 bool ok = await _earDetector.InitializeAsync();
                 if (!ok)
                 {
-                    StatusUpdated?.Invoke("Ear 模型加载失败，请检查 Models 目录", string.Empty, 0, HitThreshold);
+                    UpdateStatus("Ear 模型加载失败，请检查 Models 目录", string.Empty, 0, HitThreshold);
                     _isEnabled = false;
                     return;
                 }
 
                 await StartWorkerInternalAsync();
-                StatusUpdated?.Invoke("Ear 音频语种自动检测已就绪", SettingsService.Instance.LiveCaptionsLanguageCode, 0, HitThreshold);
+                UpdateStatus("Ear 音频语种自动检测已就绪 (等待音频流)", _settingsService.LiveCaptionsLanguageCode, 0, HitThreshold);
             }
             else
             {
-                StatusUpdated?.Invoke("自动语种检测已关闭", SettingsService.Instance.LiveCaptionsLanguageCode, 0, HitThreshold);
+                UpdateStatus("自动语种检测已关闭", _settingsService.LiveCaptionsLanguageCode, 0, HitThreshold);
             }
         }
         finally
@@ -195,7 +205,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
         catch (Exception ex)
         {
             Debug.WriteLine($"[AutoSwitcher] Audio capture start error: {ex.Message}");
-            StatusUpdated?.Invoke($"音频监听启动异常: {ex.Message}", string.Empty, 0, HitThreshold);
+            UpdateStatus($"音频监听启动异常: {ex.Message}", string.Empty, 0, HitThreshold);
             return;
         }
 
@@ -204,8 +214,8 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 
     private async Task<IWaveIn> CreateAudioCaptureAsync()
     {
-        string devId = SettingsService.Instance.AudioInputDeviceId;
-        string procName = SettingsService.Instance.TargetAudioProcessName;
+        string devId = _settingsService.AudioInputDeviceId;
+        string procName = _settingsService.TargetAudioProcessName;
 
         if (!string.IsNullOrEmpty(devId) && devId.StartsWith("process:", StringComparison.OrdinalIgnoreCase))
         {
@@ -279,10 +289,11 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                     _slidingBuffer.AddRange(convertBuffer.AsSpan(0, samplesInChunk));
                 }
 
-                // 2. 提取最近 1.5 ~ 3 秒的真实音频快照
+                // 2. 提取最近 1.0 ~ 3 秒的真实音频快照
                 float[]? snapshot = _slidingBuffer.GetLatestSnapshot(minSamples: 16000);
                 if (snapshot == null)
                 {
+                    UpdateStatus("Ear 实时监听就绪 (等待声音输入)...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     continue; // 声音样本不足 1 秒，等待累积
                 }
 
@@ -293,13 +304,17 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                 {
                     if (currentRms < 0.0035f)
                     {
-                        StatusUpdated?.Invoke("Ear 监听中 (待机静音/低音量)", SettingsService.Instance.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
+                        UpdateStatus("Ear 实时监听中 (当前静音/低音量)", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
+                    }
+                    else
+                    {
+                        UpdateStatus($"Ear 正在分析人声 (音量 RMS: {currentRms:F3})...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     }
                     continue;
                 }
 
                 string detectedCode = result.Code;
-                string currentCode = SettingsService.Instance.LiveCaptionsLanguageCode;
+                string currentCode = _settingsService.LiveCaptionsLanguageCode;
 
                 if (string.Equals(detectedCode, currentCode, StringComparison.OrdinalIgnoreCase))
                 {
@@ -308,7 +323,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                         _hitCount = 0;
                         _candidateCode = null;
                     }
-                    StatusUpdated?.Invoke($"当前语种稳定: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%)", detectedCode, 0, HitThreshold);
+                    UpdateStatus($"当前语种稳定: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%)", detectedCode, 0, HitThreshold);
                     continue;
                 }
 
@@ -323,7 +338,7 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                     _hitCount = 1;
                 }
 
-                StatusUpdated?.Invoke($"检测到不同语种: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%，命中 {_hitCount}/{HitThreshold} 次)", detectedCode, _hitCount, HitThreshold);
+                UpdateStatus($"检测到不同语种: {result.DisplayName} (置信度: {(int)(result.Confidence * 100)}%，命中 {_hitCount}/{HitThreshold} 次)", detectedCode, _hitCount, HitThreshold);
 
                 // 连续达到 3 次阈值，触发自动热切换
                 if (_hitCount >= HitThreshold && !string.IsNullOrEmpty(_candidateCode))
@@ -332,13 +347,13 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                     _hitCount = 0;
                     _candidateCode = null;
 
-                    StatusUpdated?.Invoke($"已连续 3 次确认语种，正在自动切换字幕至: {result.DisplayName}...", targetToSwitch, 0, HitThreshold);
+                    UpdateStatus($"已连续 3 次确认语种，正在自动切换字幕至: {result.DisplayName}...", targetToSwitch, 0, HitThreshold);
                     AutoSwitchTriggered?.Invoke(targetToSwitch, result.DisplayName);
 
                     _ = Task.Run(async () =>
                     {
                         await _liveCaptionsService.SwitchLanguageAsync(targetToSwitch);
-                        SettingsService.Instance.SetLiveCaptionsLanguageCodeSilent(targetToSwitch);
+                        _settingsService.SetLiveCaptionsLanguageCodeSilent(targetToSwitch);
                     });
                 }
             }

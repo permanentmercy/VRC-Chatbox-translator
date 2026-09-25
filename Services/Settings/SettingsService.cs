@@ -111,13 +111,10 @@ public partial class SettingsService
         get => Config.LiveCaptionsAutoDetectLanguage;
         set
         {
-            if (Config.LiveCaptionsAutoDetectLanguage != value)
-            {
-                Config.LiveCaptionsAutoDetectLanguage = value;
-                SaveConfigDebounced();
-                _ = LiveCaptionsAutoSwitcher.SetEnabledAsync(value, Config.LiveCaptionsAutoDetectIntervalSeconds);
-                LiveCaptionsAutoDetectChanged?.Invoke(value);
-            }
+            Config.LiveCaptionsAutoDetectLanguage = value;
+            SaveConfigDebounced();
+            _ = LiveCaptionsAutoSwitcher.SetEnabledAsync(value, Config.LiveCaptionsAutoDetectIntervalSeconds);
+            LiveCaptionsAutoDetectChanged?.Invoke(value);
         }
     }
 
@@ -501,7 +498,7 @@ public partial class SettingsService
     {
         LoadConfig();
 
-        LiveCaptionsAutoSwitcher = new LiveCaptionsLanguageAutoSwitcher(LiveCaptionsService);
+        LiveCaptionsAutoSwitcher = new LiveCaptionsLanguageAutoSwitcher(LiveCaptionsService, this);
         if (Config.LiveCaptionsAutoDetectLanguage)
         {
             _ = LiveCaptionsAutoSwitcher.SetEnabledAsync(true, Config.LiveCaptionsAutoDetectIntervalSeconds);
