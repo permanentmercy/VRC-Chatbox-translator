@@ -235,7 +235,7 @@ public sealed partial class InteractionSection : UserControl
     private void UpdateCharCount()
     {
         int len = PersistentTextBox.Text?.Length ?? 0;
-        PersistentCharCountTextBlock.Text = $"{len} / 144 字符";
+        PersistentCharCountTextBlock.Text = $"{len} / 144 ";
         if (len > 144)
         {
             PersistentCharCountTextBlock.Foreground = new SolidColorBrush(Colors.Red);

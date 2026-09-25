@@ -9,7 +9,7 @@
 
     <StackPanel Spacing="18">
         <StackPanel Spacing="4">
-            <TextBlock Text="AI 翻译" Style="{StaticResource TitleTextBlockStyle}" />
+            <TextBlock Text="翻译" Style="{StaticResource TitleTextBlockStyle}" />
         </StackPanel>
 
         <!-- 卡片 1: Ollama 接口与模型配置 -->
@@ -19,7 +19,7 @@
             <StackPanel Spacing="14">
                 <TextBlock Text="Ollama 服务与翻译参数" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
 
-                <ToggleSwitch x:Name="TranslationSwitch" Header="启用 Ollama AI 实时翻译"
+                <ToggleSwitch x:Name="TranslationSwitch" 
                               Toggled="TranslationSwitch_Toggled"
                               ToolTipService.ToolTip="语音识别定稿后自动调用本地 Ollama 模型进行多语言互译" />
 

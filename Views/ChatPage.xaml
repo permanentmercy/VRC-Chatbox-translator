@@ -110,7 +110,7 @@
                            HorizontalAlignment="Right"
                            VerticalAlignment="Bottom"
                            Margin="0,0,14,6"
-                           Text="0 / 144 字符"
+                           Text="0 / 144 "
                            Style="{StaticResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </Grid>

@@ -98,7 +98,7 @@
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="1" CornerRadius="8" Padding="18">
             <StackPanel Spacing="12">
-                <TextBlock Text="持久化配置文件" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                <TextBlock Text="配置文件" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
 
                 <Border Background="{ThemeResource LayerFillColorDefaultBrush}" CornerRadius="6" Padding="12,10">
                     <Grid ColumnSpacing="12">
@@ -122,7 +122,7 @@
                 BorderThickness="1" CornerRadius="8" Padding="18">
             <StackPanel Spacing="12">
                 <Grid>
-                    <TextBlock Text="发送记录与调试日志" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" VerticalAlignment="Center" />
+                    <TextBlock Text="日志" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" VerticalAlignment="Center" />
                     <Button HorizontalAlignment="Right" Content="清空日志" Click="ClearLogsButton_Click" />
                 </Grid>
 

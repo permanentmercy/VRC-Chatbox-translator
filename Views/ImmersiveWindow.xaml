@@ -144,7 +144,7 @@
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Spacing="6" Margin="0,0,0,6">
                         <TextBlock x:Name="CharCountTextBlock"
                                    VerticalAlignment="Center"
-                                   Text="0 / 144 字符"
+                                   Text="0 / 144 "
                                    Style="{StaticResource CaptionTextBlockStyle}"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <Button x:Name="ExitImmersiveButton"

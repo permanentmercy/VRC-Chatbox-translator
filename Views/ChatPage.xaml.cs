@@ -230,7 +230,7 @@ public sealed partial class ChatPage : Page
 
         string rawText = MessageInputBox.Text;
         int len = rawText.Length;
-        CharCountTextBlock.Text = $"{len} / 144 字符";
+        CharCountTextBlock.Text = $"{len} / 144 ";
 
         if (len == 0)
         {
@@ -301,7 +301,7 @@ public sealed partial class ChatPage : Page
                         try
                         {
                             MessageInputBox.Text = string.Empty;
-                            CharCountTextBlock.Text = "0 / 144 字符";
+                            CharCountTextBlock.Text = "0 / 144 ";
                             CharCountTextBlock.ClearValue(TextBlock.ForegroundProperty);
                             _hasManualNewlines = false;
                         }

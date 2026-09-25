@@ -86,9 +86,9 @@
                               Width="300" HorizontalAlignment="Left"
                               SelectionChanged="GpuModeComboBox_SelectionChanged"
                               ToolTipService.ToolTip="调节 Whisper AI 对 GPU 的算力调用模式。玩大型游戏或 VRChat 时推荐开启【低负载】防止抢占 GPU 导致掉帧卡顿；需要最高实时性可选择【高性能】">
-                        <ComboBoxItem Content="高性能 (尽全力保证及时性，0ms 间隔)" Tag="High" />
-                        <ComboBoxItem Content="均衡模式 (平衡响应与负载，25ms 缓冲)" Tag="Medium" />
-                        <ComboBoxItem Content="低负载 (防游戏卡顿慢慢算，有序队列)" Tag="Low" />
+                        <ComboBoxItem Content="高性能" Tag="High" />
+                        <ComboBoxItem Content="均衡模式" Tag="Medium" />
+                        <ComboBoxItem Content="低负载" Tag="Low" />
                     </ComboBox>
 
                     <!-- 语音切片时长 -->
@@ -167,7 +167,7 @@
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="1" CornerRadius="8" Padding="18">
             <StackPanel Spacing="14">
-                <TextBlock Text="字幕历史保留队列" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                <TextBlock Text="字幕历史保留" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
                 <TextBlock Text="断句规则：遇句号/问号/感叹号立即切句；实时识别中每累计 2 个逗号自动切为一句独立字幕。" 
                            Style="{StaticResource CaptionTextBlockStyle}" 
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

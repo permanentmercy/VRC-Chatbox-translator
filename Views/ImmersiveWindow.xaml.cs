@@ -300,7 +300,7 @@ public sealed partial class ImmersiveWindow : Window
 
         string rawText = MessageInputBox.Text;
         int len = rawText.Length;
-        CharCountTextBlock.Text = $"{len} / 144 字符";
+        CharCountTextBlock.Text = $"{len} / 144 ";
 
         if (len == 0)
         {
@@ -400,7 +400,7 @@ public sealed partial class ImmersiveWindow : Window
                         try
                         {
                             MessageInputBox.Text = string.Empty;
-                            CharCountTextBlock.Text = "0 / 144 字符";
+                            CharCountTextBlock.Text = "0 / 144 ";
                             CharCountTextBlock.ClearValue(TextBlock.ForegroundProperty);
                             MeasureTextBlock.Text = "A";
                             _hasManualNewlines = false;

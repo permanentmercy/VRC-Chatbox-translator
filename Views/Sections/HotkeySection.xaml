@@ -49,7 +49,7 @@
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="1" CornerRadius="8" Padding="18">
             <StackPanel Spacing="14">
-                <TextBlock Text="沉浸式悬浮窗" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                <TextBlock Text="简洁悬浮窗" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
 
                 <Grid ColumnSpacing="16" RowSpacing="12">
                     <Grid.ColumnDefinitions>

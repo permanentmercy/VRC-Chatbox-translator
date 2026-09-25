@@ -96,7 +96,7 @@
                             <FontIcon Glyph="&#xE720;" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem x:Name="TranslationNavItem" Content="AI 翻译" Tag="translation">
+                    <NavigationViewItem x:Name="TranslationNavItem" Content="翻译配置" Tag="translation">
                         <NavigationViewItem.Icon>
                             <FontIcon Glyph="&#xE8C1;" />
                         </NavigationViewItem.Icon>
