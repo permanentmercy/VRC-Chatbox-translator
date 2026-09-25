@@ -362,13 +362,13 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 
                 if (result == null)
                 {
-                    if (currentRms < 0.0035f)
+                    if (currentRms < 0.0006f)
                     {
-                        UpdateStatus($"Ear 监听中 (音量偏低 RMS: {currentRms:F3})", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
+                        UpdateStatus($"Ear 监听中 (待机静音 RMS: {currentRms:F4})", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     }
                     else
                     {
-                        UpdateStatus($"Ear 正在分析声音特征 (音量 RMS: {currentRms:F3})...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
+                        UpdateStatus($"Ear 正在分析人声特征 (音量 RMS: {currentRms:F4})...", _settingsService.LiveCaptionsLanguageCode, _hitCount, HitThreshold);
                     }
                     continue;
                 }

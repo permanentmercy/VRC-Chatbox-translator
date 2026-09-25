@@ -82,26 +82,42 @@ public class EarLanguageDetector : IDisposable
             return null;
         }
 
-        // 计算音频能量有效值 (RMS)，剔除纯静音与微弱底噪
+        // 计算音频能量有效值 (RMS) 与峰值 (Peak)
         float sumSq = 0f;
+        float peak = 0f;
         for (int i = 0; i < samples16k.Length; i++)
         {
-            sumSq += samples16k[i] * samples16k[i];
+            float s = samples16k[i];
+            sumSq += s * s;
+            float abs = Math.Abs(s);
+            if (abs > peak) peak = abs;
         }
         float rms = (float)Math.Sqrt(sumSq / samples16k.Length);
         rmsCallback?.Invoke(rms);
 
-        // 降低静音门槛至 0.0035f (-49 dBFS)，确保轻声说话与游戏回路低音量也能被有效捕获
-        if (rms < 0.0035f)
+        // 调整静音底噪门槛至 0.0006f (-64 dBFS)，灵敏感知普通麦克风输入与远场轻声说话
+        if (rms < 0.0006f || peak < 0.0012f)
         {
             return null;
+        }
+
+        // 自适应增益归一化：若声音较小 (如 RMS 在 0.001~0.003)，适度放大至理想电平 (Peak ~0.7f)，大幅提升 Whisper 声学特征提取精度
+        float[] inferenceSamples = samples16k;
+        if (peak > 0f && peak < 0.35f)
+        {
+            float gain = Math.Min(300f, 0.7f / peak);
+            inferenceSamples = new float[samples16k.Length];
+            for (int i = 0; i < samples16k.Length; i++)
+            {
+                inferenceSamples[i] = Math.Clamp(samples16k[i] * gain, -1.0f, 1.0f);
+            }
         }
 
         await _lock.WaitAsync();
         try
         {
-            var (lang, prob) = _processor.DetectLanguageWithProbability(samples16k);
-            if (string.IsNullOrWhiteSpace(lang) || prob < 0.40f)
+            var (lang, prob) = _processor.DetectLanguageWithProbability(inferenceSamples);
+            if (string.IsNullOrWhiteSpace(lang) || prob < 0.35f)
             {
                 return null;
             }
