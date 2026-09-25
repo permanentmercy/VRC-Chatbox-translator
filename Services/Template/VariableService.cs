@@ -51,6 +51,7 @@ public class VariableService
         RegisterBuiltin("language", "当前字幕语言", "当前语音识别/字幕引擎生效的语言名称 (如 中文, 日本語, English)");
         RegisterBuiltin("language_code", "当前字幕语言代码", "当前字幕引擎生效的语言代码 (如 zh-CN, ja-JP, en-US)");
         RegisterBuiltin("time", "当前时间", "当前系统时钟 (HH:mm)");
+        RegisterBuiltin(@"\n", "换行符", "插入显式换行 (仅使用 {\\n} 时才在游戏内换行)");
     }
 
     private void RegisterBuiltin(string name, string displayName, string description)
@@ -125,6 +126,13 @@ public class VariableService
             return DateTime.Now.ToString("HH:mm");
         }
 
+        if (string.Equals(name, @"\n", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "newline", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "换行", StringComparison.OrdinalIgnoreCase))
+        {
+            return "\n";
+        }
+
         if (string.Equals(name, "lang", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "caption_lang", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "subtitle_lang", StringComparison.OrdinalIgnoreCase) ||
@@ -154,6 +162,15 @@ public class VariableService
         if (string.IsNullOrEmpty(template) || string.IsNullOrEmpty(name)) return false;
         name = name.Trim().Trim('{', '}').Trim();
         if (template.IndexOf($"{{{name}}}", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+
+        if (string.Equals(name, @"\n", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "newline", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "换行", StringComparison.OrdinalIgnoreCase))
+        {
+            return template.IndexOf(@"{\n}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   template.IndexOf("{newline}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   template.IndexOf("{换行}", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
 
         if (string.Equals(name, "language", StringComparison.OrdinalIgnoreCase))
         {
@@ -185,13 +202,22 @@ public class VariableService
     }
 
     /// <summary>
-    /// 使用当前变量池中的最新值渲染模板字符串，并进行 144 字符安全截断（VRChat 限制）
+    /// 使用当前变量池中的最新值渲染模板字符串，并进行 144 字符安全截断（VRChat 限制）。
+    /// 注意：仅在显式书写 {\n}、{newline} 或 {换行} 时才在输出中插入真实换行；
+    /// 模板中的常规回车物理换行将被视为空格清洗，不会直接发送到游戏内。
     /// </summary>
     public string Render(string template)
     {
         if (string.IsNullOrEmpty(template)) return string.Empty;
 
-        string rendered = VariableRegex.Replace(template, match =>
+        // 1. 将显式换行标识（{\n}, {\N}, {newline}, {换行}）转换为受控安全占位符
+        string processed = Regex.Replace(template, @"\{(\\n|newline|换行)\}", "\uE000", RegexOptions.IgnoreCase);
+
+        // 2. 将模板内所有的普通物理换行（回车）转为空格，避免直接发送物理换行到游戏内
+        processed = processed.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
+
+        // 3. 正常解析并替换所有变量
+        string rendered = VariableRegex.Replace(processed, match =>
         {
             string varName = match.Groups[1].Value;
             if (string.Equals(varName, "time", StringComparison.OrdinalIgnoreCase))
@@ -223,10 +249,17 @@ public class VariableService
             return match.Value;
         });
 
-        // 规范化多余空行，最多允许连续 1 个换行
-        rendered = rendered.Replace("\r\n", "\n").Replace('\r', '\n');
-        
-        // VRChat 单条气泡最多 144 个字符限制
+        // 4. 将变量替换后可能混入的物理换行也统一消除（只有显式占位符才允许换行）
+        rendered = rendered.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
+
+        // 5. 将受控占位符还原为真实换行符
+        rendered = rendered.Replace("\uE000", "\n");
+
+        // 6. 规整换行符前后的空白字符与多余空格
+        rendered = Regex.Replace(rendered, @"[ \t]*\n[ \t]*", "\n");
+        rendered = Regex.Replace(rendered, @"[ ]{2,}", " ");
+
+        // 7. VRChat 单条气泡最多 144 个字符限制
         if (rendered.Length > 144)
         {
             rendered = rendered.Substring(0, 144);

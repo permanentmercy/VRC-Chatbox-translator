@@ -117,6 +117,9 @@ public class PersistentTextService : IDisposable
 
         // 智能清洗遗留的多余分隔符 (比如连续的 " |  | " 归一化为 " | ")
         processed = Regex.Replace(processed, @"(\s*[\|／/\\,\-]\s*)+", " | ");
+        // 清洗换行标记周围残留的分隔符 (例如 " | {\n}" 或 "{\n} | ")
+        processed = Regex.Replace(processed, @"\s*\|\s*\{(\\n|newline|换行)\}", "{$1}", RegexOptions.IgnoreCase);
+        processed = Regex.Replace(processed, @"\{(\\n|newline|换行)\}\s*\|\s*", "{$1}", RegexOptions.IgnoreCase);
         processed = processed.Trim(' ', '|', '-', '/', '\\', ',');
         return processed;
     }

@@ -9,9 +9,17 @@ public partial class SettingsService
 {
     public record SubtitleEntry(string Original, string Translated, long LatencyMs);
     private readonly List<SubtitleEntry> _subtitleEntries = new();
+    private CancellationTokenSource? _activeTranslationCts;
+    private readonly object _translationLock = new();
 
     public void ClearSubtitleQueue()
     {
+        lock (_translationLock)
+        {
+            _activeTranslationCts?.Cancel();
+            _activeTranslationCts?.Dispose();
+            _activeTranslationCts = null;
+        }
         lock (_subtitleEntries)
         {
             _subtitleEntries.Clear();
@@ -29,7 +37,7 @@ public partial class SettingsService
         UpdateCombinedSubtitles(interimText);
     }
 
-    private async void OnSpeechRecognized(string text)
+    private void OnSpeechRecognized(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
         text = text.Replace("\r", "").Replace("\n", " ").Trim();
@@ -52,33 +60,55 @@ public partial class SettingsService
 
         if (IsTranslationEnabled)
         {
-            SpeechStatusUpdated?.Invoke("正在请求 Ollama AI 翻译...");
-            try
+            CancellationTokenSource cts;
+            lock (_translationLock)
             {
-                string targetLang = ParseTargetLanguage(TargetLanguage);
-                var result = await OllamaService.TranslateAsync(text, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate);
-                AddLog("Translate", $"{result.Text} ({result.LatencyMs}ms)", true);
-                SpeechStatusUpdated?.Invoke($"翻译完成 ({result.LatencyMs}ms)");
+                _activeTranslationCts?.Cancel();
+                _activeTranslationCts?.Dispose();
+                _activeTranslationCts = new CancellationTokenSource();
+                cts = _activeTranslationCts;
+            }
 
-                // 更新队列中该句对应的翻译内容与延迟
-                string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
-                lock (_subtitleEntries)
+            _ = Task.Run(async () =>
+            {
+                var token = cts.Token;
+                SpeechStatusUpdated?.Invoke("正在请求 Ollama AI 翻译...");
+                try
                 {
-                    int idx = _subtitleEntries.FindLastIndex(e => e.Original == text);
-                    if (idx >= 0)
+                    string targetLang = ParseTargetLanguage(TargetLanguage);
+                    var result = await OllamaService.TranslateAsync(text, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate, token);
+                    if (token.IsCancellationRequested) return;
+
+                    AddLog("Translate", $"{result.Text} ({result.LatencyMs}ms)", true);
+                    SpeechStatusUpdated?.Invoke($"翻译完成 ({result.LatencyMs}ms)");
+
+                    // 更新队列中该句对应的翻译内容与延迟
+                    string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
+                    lock (_subtitleEntries)
                     {
-                        _subtitleEntries[idx] = new SubtitleEntry(text, cleanTrans, result.LatencyMs);
+                        int idx = _subtitleEntries.FindLastIndex(e => e.Original == text);
+                        if (idx >= 0)
+                        {
+                            _subtitleEntries[idx] = new SubtitleEntry(text, cleanTrans, result.LatencyMs);
+                        }
+                    }
+                    UpdateCombinedSubtitles();
+                    VariableService.SetVariable("translation", cleanTrans);
+                }
+                catch (OperationCanceledException)
+                {
+                    // 被更新的最新翻译请求抢占，安全退出
+                }
+                catch (Exception ex)
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        string err = $"翻译失败: {ex.Message}";
+                        AddLog("Translate", err, false);
+                        SpeechStatusUpdated?.Invoke(err);
                     }
                 }
-                UpdateCombinedSubtitles();
-                VariableService.SetVariable("translation", cleanTrans);
-            }
-            catch (Exception ex)
-            {
-                string err = $"翻译失败: {ex.Message}";
-                AddLog("Translate", err, false);
-                SpeechStatusUpdated?.Invoke(err);
-            }
+            });
         }
     }
 

@@ -196,6 +196,8 @@ public partial class LiveCaptionsService : IDisposable
             _recentCommittedSentences.Clear();
         }
 
+        bool isInitialBaseline = true;
+
         while (!ct.IsCancellationRequested && _isRunning)
         {
             try
@@ -254,6 +256,19 @@ public partial class LiveCaptionsService : IDisposable
                 if (string.IsNullOrWhiteSpace(fullText))
                 {
                     await Task.Delay(35, ct);
+                    continue;
+                }
+
+                // 首帧基线校准：若首次连接到 Windows 实时字幕窗口时已有大段历史文本，
+                // 绝不循环切句并发广播，而是将全部历史沉淀为基线，至多仅取最后 1 句触发提交
+                if (isInitialBaseline)
+                {
+                    isInitialBaseline = false;
+                    _lastFullText = fullText;
+                    idleTimer.Restart();
+
+                    AlignInitialBaseline(fullText);
+                    await Task.Delay(40, ct);
                     continue;
                 }
 
@@ -320,6 +335,56 @@ public partial class LiveCaptionsService : IDisposable
                 captionsTextBlock = null;
                 await Task.Delay(500, ct);
             }
+        }
+    }
+
+    private void AlignInitialBaseline(string fullText)
+    {
+        var allSentences = new List<string>();
+        string tempText = fullText.Trim();
+
+        while (true)
+        {
+            int boundaryIdx = FindSentenceBoundary(tempText);
+            if (boundaryIdx < 0)
+            {
+                break;
+            }
+
+            string sentence = tempText.Substring(0, boundaryIdx + 1).Trim();
+            tempText = tempText.Substring(boundaryIdx + 1).TrimStart(' ', '\t', '，', ',', '、', '；', ';', '。', '！', '？', '…', '.', '!', '?');
+
+            if (ContainsMeaningfulContent(sentence))
+            {
+                allSentences.Add(sentence);
+            }
+        }
+
+        if (allSentences.Count == 0)
+        {
+            if (ContainsMeaningfulContent(tempText))
+            {
+                SpeechHypothesis?.Invoke(tempText);
+            }
+            return;
+        }
+
+        // 将除最后一句之外的所有历史句子直接静默记入已消费记录（作为基线水印，杜绝重复切分）
+        for (int i = 0; i < allSentences.Count - 1; i++)
+        {
+            RecordCommittedSentence(allSentences[i]);
+        }
+
+        // 仅取最后 1 句作为最新识别内容触发提交
+        string lastSentence = allSentences[^1];
+        RecordCommittedSentence(lastSentence);
+        SpeechRecognized?.Invoke(lastSentence);
+        StatusChanged?.Invoke($"已识别 (初始基线): {lastSentence}");
+
+        // 如果在最后一句之后还有未闭合的短语，作为假说更新
+        if (ContainsMeaningfulContent(tempText))
+        {
+            SpeechHypothesis?.Invoke(tempText);
         }
     }
 
