@@ -75,9 +75,9 @@ public class EarLanguageDetector : IDisposable
     /// <summary>
     /// 对 16kHz 单声道 PCM 浮点音频执行轻量声学语种识别
     /// </summary>
-    public async Task<EarLanguageResult?> DetectFromAudioAsync(float[] samples16k)
+    public async Task<EarLanguageResult?> DetectFromAudioAsync(float[] samples16k, Action<float>? rmsCallback = null)
     {
-        if (!_isInitialized || _processor == null || samples16k == null || samples16k.Length < 4000)
+        if (!_isInitialized || _processor == null || samples16k == null || samples16k.Length < 8000)
         {
             return null;
         }
@@ -89,16 +89,19 @@ public class EarLanguageDetector : IDisposable
             sumSq += samples16k[i] * samples16k[i];
         }
         float rms = (float)Math.Sqrt(sumSq / samples16k.Length);
-        if (rms < 0.012f)
+        rmsCallback?.Invoke(rms);
+
+        // 降低静音门槛至 0.0035f (-49 dBFS)，确保轻声说话与游戏回路低音量也能被有效捕获
+        if (rms < 0.0035f)
         {
-            return null; // 静音段，跳过推理以节省算力
+            return null;
         }
 
         await _lock.WaitAsync();
         try
         {
             var (lang, prob) = _processor.DetectLanguageWithProbability(samples16k);
-            if (string.IsNullOrWhiteSpace(lang) || prob < 0.45f)
+            if (string.IsNullOrWhiteSpace(lang) || prob < 0.40f)
             {
                 return null;
             }

@@ -18,7 +18,12 @@ public class VrcInGameGuard : IDisposable
     private const int VK_RETURN = 0x0D;
     private const int VK_BACK = 0x08;
     private const int VK_SPACE = 0x20;
+    private const int VK_ESCAPE = 0x1B;
     private const int VK_Y = 0x59; // VRChat 默认聊天框呼出键
+    private const int VK_PROCESSKEY = 0xE5; // Windows IME 输入法按键转换事件
+
+    private bool _isChatboxOpen = false;
+    private DateTime _lastChatboxActivity = DateTime.MinValue;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
@@ -102,16 +107,11 @@ public class VrcInGameGuard : IDisposable
                 int vkCode = Marshal.ReadInt32(lParam);
                 if (IsVrcForeground())
                 {
-                    if (vkCode == VK_RETURN)
-                    {
-                        // 玩家在游戏内按了回车（大概率是发送了聊天气泡）
-                        InGameMessageSent?.Invoke();
-                    }
-                    else if (IsTypingKey(vkCode))
-                    {
-                        // 玩家在游戏内打字或按 Y 呼出聊天框
-                        InGameTyping?.Invoke();
-                    }
+                    HandleVrcKeyEvent(vkCode);
+                }
+                else
+                {
+                    _isChatboxOpen = false;
                 }
             }
             catch { }
@@ -150,11 +150,58 @@ public class VrcInGameGuard : IDisposable
         return _lastIsVrc;
     }
 
-    private static bool IsTypingKey(int vkCode)
+    private void HandleVrcKeyEvent(int vkCode)
     {
-        // Y 键 (VRChat 默认聊天框快捷键)
-        if (vkCode == VK_Y) return true;
+        var now = DateTime.UtcNow;
 
+        // 1. Esc 键: 取消并关闭聊天框，立即退出打字状态，不触发避让
+        if (vkCode == VK_ESCAPE)
+        {
+            _isChatboxOpen = false;
+            return;
+        }
+
+        // 2. 回车键: 仅当聊天框处于打开打字状态时，按回车才算“发送了聊天消息”
+        if (vkCode == VK_RETURN)
+        {
+            if (_isChatboxOpen)
+            {
+                _isChatboxOpen = false;
+                InGameMessageSent?.Invoke();
+            }
+            return;
+        }
+
+        // 3. Y 键 (VRChat 默认聊天框呼出键) 或 IME 输入法按键 (拼音/输入法模式)
+        if (vkCode == VK_Y || vkCode == VK_PROCESSKEY)
+        {
+            _isChatboxOpen = true;
+            _lastChatboxActivity = now;
+            InGameTyping?.Invoke();
+            return;
+        }
+
+        // 4. 处于聊天打字状态时，检测是否超时 (超过 15 秒无击键自动重置)
+        if (_isChatboxOpen)
+        {
+            if ((now - _lastChatboxActivity).TotalSeconds > 15.0)
+            {
+                _isChatboxOpen = false;
+                return;
+            }
+
+            // 在聊天框开启状态下，输入字符、退格、空格均算打字输入
+            if (IsInputKey(vkCode))
+            {
+                _lastChatboxActivity = now;
+                InGameTyping?.Invoke();
+            }
+        }
+        // 5. 聊天框未开启时，移动键 (WASD)、空格跳跃、普通游戏操作键一律完全忽略，杜绝误避让
+    }
+
+    private static bool IsInputKey(int vkCode)
+    {
         // 退格、空格
         if (vkCode == VK_BACK || vkCode == VK_SPACE) return true;
 

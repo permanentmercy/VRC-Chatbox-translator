@@ -96,6 +96,16 @@ public partial class SettingsService
         }
     }
 
+    public void SetLiveCaptionsLanguageCodeSilent(string code)
+    {
+        string norm = string.IsNullOrWhiteSpace(code) ? "zh-CN" : code;
+        if (Config.LiveCaptionsLanguageCode != norm)
+        {
+            Config.LiveCaptionsLanguageCode = norm;
+            SaveConfigDebounced();
+        }
+    }
+
     public bool LiveCaptionsAutoDetectLanguage
     {
         get => Config.LiveCaptionsAutoDetectLanguage;

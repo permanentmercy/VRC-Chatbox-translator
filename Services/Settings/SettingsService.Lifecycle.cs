@@ -25,6 +25,11 @@ public partial class SettingsService
             SpeechStatusUpdated?.Invoke($"已自动切换为 [Whisper 本地 AI 模型] 配合进程隔离 (过滤音乐与外部杂音)");
         }
 
+        if (LiveCaptionsAutoSwitcher.IsEnabled)
+        {
+            _ = LiveCaptionsAutoSwitcher.RebindAudioCaptureAsync();
+        }
+
         if (IsSpeechRecognitionEnabled)
         {
             await ApplySpeechStateAsync();
