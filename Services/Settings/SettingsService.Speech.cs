@@ -11,6 +11,10 @@ public partial class SettingsService
     private readonly List<SubtitleEntry> _subtitleEntries = new();
     private CancellationTokenSource? _activeTranslationCts;
     private readonly object _translationLock = new();
+    private string? _currentInterimTranslation;
+    private string _lastInterimTranslationText = string.Empty;
+    private DateTime _lastInterimTranslationTime = DateTime.MinValue;
+    private long _translationSequence = 0;
 
     public void ClearSubtitleQueue()
     {
@@ -19,6 +23,9 @@ public partial class SettingsService
             _activeTranslationCts?.Cancel();
             _activeTranslationCts?.Dispose();
             _activeTranslationCts = null;
+            _currentInterimTranslation = null;
+            _lastInterimTranslationText = string.Empty;
+            _lastInterimTranslationTime = DateTime.MinValue;
         }
         lock (_subtitleEntries)
         {
@@ -35,6 +42,80 @@ public partial class SettingsService
     private void OnSpeechHypothesis(string interimText)
     {
         UpdateCombinedSubtitles(interimText);
+        TryTriggerInterimTranslation(interimText);
+    }
+
+    private void TryTriggerInterimTranslation(string interimText)
+    {
+        if (!IsTranslationEnabled) return;
+        if (string.IsNullOrWhiteSpace(interimText)) return;
+
+        string clean = interimText.Replace("\r", "").Replace("\n", " ").Trim();
+        if (string.IsNullOrWhiteSpace(clean)) return;
+
+        // 判定是否达到“中途”条件：
+        // 1. 包含逗号/分句符（， , 、 ； ;），表明前半句语义已成型；
+        // 2. 或者有效字数达到门槛（>= 6 个字符）；
+        bool hasComma = clean.IndexOfAny(new[] { '，', ',', '、', '；', ';' }) >= 0;
+        bool isHalfway = hasComma || clean.Length >= 6;
+        if (!isHalfway) return;
+
+        // 防抖节流检查：距离上次发起预翻译至少 750ms，且内容相较于上次预翻译新增 >= 3 个字（或者产生新标点）
+        DateTime now = DateTime.UtcNow;
+        lock (_translationLock)
+        {
+            if (now - _lastInterimTranslationTime < TimeSpan.FromMilliseconds(750))
+            {
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(_lastInterimTranslationText) &&
+                clean.Length < _lastInterimTranslationText.Length + 3 &&
+                clean.EndsWith(_lastInterimTranslationText, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastInterimTranslationTime = now;
+            _lastInterimTranslationText = clean;
+        }
+
+        long seq = System.Threading.Interlocked.Increment(ref _translationSequence);
+        CancellationTokenSource cts;
+        lock (_translationLock)
+        {
+            _activeTranslationCts?.Cancel();
+            _activeTranslationCts?.Dispose();
+            _activeTranslationCts = new CancellationTokenSource();
+            cts = _activeTranslationCts;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            var token = cts.Token;
+            try
+            {
+                string targetLang = ParseTargetLanguage(TargetLanguage);
+                var result = await OllamaService.TranslateAsync(clean, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate, token);
+                if (token.IsCancellationRequested || seq < Volatile.Read(ref _translationSequence)) return;
+
+                string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
+                if (string.IsNullOrWhiteSpace(cleanTrans)) return;
+
+                lock (_translationLock)
+                {
+                    _currentInterimTranslation = cleanTrans;
+                }
+
+                // 提前更新模板变量，让游戏内头顶气泡即时展现预翻译
+                VariableService.SetVariable("translation", cleanTrans);
+
+                // 同步刷新假说字幕与延迟显示
+                UpdateCombinedSubtitles(interimText);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception) { }
+        });
     }
 
     private void OnSpeechRecognized(string text)
@@ -55,11 +136,20 @@ public partial class SettingsService
                 _subtitleEntries.RemoveAt(0);
             }
         }
+
+        lock (_translationLock)
+        {
+            // 完整句子已到，重置假说预翻译缓存并取消任何正在跑的中间请求
+            _currentInterimTranslation = null;
+            _lastInterimTranslationText = string.Empty;
+        }
+
         UpdateCombinedSubtitles();
         VariableService.SetVariable("speech", text);
 
         if (IsTranslationEnabled)
         {
+            long seq = System.Threading.Interlocked.Increment(ref _translationSequence);
             CancellationTokenSource cts;
             lock (_translationLock)
             {
@@ -72,17 +162,17 @@ public partial class SettingsService
             _ = Task.Run(async () =>
             {
                 var token = cts.Token;
-                SpeechStatusUpdated?.Invoke("正在请求 Ollama AI 翻译...");
+                SpeechStatusUpdated?.Invoke("正在请求 Ollama AI 最终翻译...");
                 try
                 {
                     string targetLang = ParseTargetLanguage(TargetLanguage);
                     var result = await OllamaService.TranslateAsync(text, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate, token);
-                    if (token.IsCancellationRequested) return;
+                    if (token.IsCancellationRequested || seq < Volatile.Read(ref _translationSequence)) return;
 
                     AddLog("Translate", $"{result.Text} ({result.LatencyMs}ms)", true);
                     SpeechStatusUpdated?.Invoke($"翻译完成 ({result.LatencyMs}ms)");
 
-                    // 更新队列中该句对应的翻译内容与延迟
+                    // 更新队列中该句对应的翻译内容与延迟，精准覆盖
                     string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
                     lock (_subtitleEntries)
                     {
@@ -92,8 +182,10 @@ public partial class SettingsService
                             _subtitleEntries[idx] = new SubtitleEntry(text, cleanTrans, result.LatencyMs);
                         }
                     }
-                    UpdateCombinedSubtitles();
+
+                    // 终态精准覆盖变量
                     VariableService.SetVariable("translation", cleanTrans);
+                    UpdateCombinedSubtitles();
                 }
                 catch (OperationCanceledException)
                 {
@@ -118,7 +210,7 @@ public partial class SettingsService
 
         // 对临时假说进行严格规范化：
         // 1. 过滤内部换行符
-        // 2. 如果假说中混入了包含句子终结符或达到2个逗号的已完成句子，仅保留最后一个未闭合的分句
+        // 2. 如果假说中混入了包含句子终结符的已完成句子，仅保留最后一个未闭合的分句
         string cleanHypothesis = string.Empty;
         if (!string.IsNullOrWhiteSpace(currentHypothesis))
         {
@@ -160,9 +252,20 @@ public partial class SettingsService
             if (item.LatencyMs > 0) latestLatency = item.LatencyMs;
         }
 
+        string? interimTrans = null;
+        lock (_translationLock)
+        {
+            interimTrans = _currentInterimTranslation;
+        }
+
         if (!string.IsNullOrWhiteSpace(cleanHypothesis))
         {
             originalLines.Add(cleanHypothesis.Trim() + " ...");
+            // 若当前存在中途预翻译结果，同步呈现在翻译行中
+            if (!string.IsNullOrWhiteSpace(interimTrans))
+            {
+                translatedLines.Add(interimTrans.Trim() + " ...");
+            }
         }
 
         // 强保障：无论如何，最终呈现的行数绝对不可超过 capacity 限制
@@ -200,24 +303,18 @@ public partial class SettingsService
         if (string.IsNullOrWhiteSpace(text)) return -1;
 
         int lastCut = -1;
-        int commaCount = 0;
 
         for (int i = 0; i < text.Length; i++)
         {
             char c = text[i];
             if (c == '。' || c == '！' || c == '？' || c == '…' || c == '.' || c == '!' || c == '?')
             {
-                lastCut = i;
-                commaCount = 0;
-            }
-            else if (c == '，' || c == ',' || c == '、' || c == '；' || c == ';')
-            {
-                commaCount++;
-                if (commaCount >= 2)
+                // 小数点防护（如 3.14）
+                if (c == '.' && i > 0 && i + 1 < text.Length && char.IsDigit(text[i - 1]) && char.IsDigit(text[i + 1]))
                 {
-                    lastCut = i;
-                    commaCount = 0;
+                    continue;
                 }
+                lastCut = i;
             }
         }
 

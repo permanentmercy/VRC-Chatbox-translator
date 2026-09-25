@@ -308,8 +308,13 @@ public partial class LiveCaptionsService : IDisposable
                 {
                     SpeechHypothesis?.Invoke(currentNewText);
 
-                    // 如果说话停顿超过 750ms，且字数达到一定长度，主动断句提交
-                    if (idleTimer.ElapsedMilliseconds >= 750 && currentNewText.Length >= 2)
+                    // 自然说话停顿判定：
+                    // 1. 正常停顿超时提升至 1600ms（给予充分的换气与连贯思考时间）且有效字数 >= 3；
+                    // 2. 极短碎片（1-2个字）需静默超过 2500ms 彻底无后续语音才定稿，彻底杜绝单字成句
+                    long elapsed = idleTimer.ElapsedMilliseconds;
+                    int meaningfulLen = GetMeaningfulContentLength(currentNewText);
+
+                    if ((elapsed >= 1600 && meaningfulLen >= 3) || (elapsed >= 2500 && meaningfulLen >= 1))
                     {
                         string sentenceToCommit = currentNewText.Trim();
                         if (ContainsMeaningfulContent(sentenceToCommit))
@@ -477,12 +482,33 @@ public partial class LiveCaptionsService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(text)) return -1;
 
-        int commaCount = 0;
         for (int i = 0; i < text.Length; i++)
         {
             char c = text[i];
             if (IsTerminalDelimiter(c))
             {
+                // 1. 浮点数/小数点保护：如 3.14，不作为断句符
+                if (c == '.' && i > 0 && i + 1 < text.Length && char.IsDigit(text[i - 1]) && char.IsDigit(text[i + 1]))
+                {
+                    continue;
+                }
+
+                // 2. 常见单字母缩写保护：如 A. 或 e.g.，后接小写字母时不切断
+                if (c == '.' && i > 0 && char.IsLetter(text[i - 1]))
+                {
+                    if (i + 2 < text.Length && text[i + 1] == ' ' && char.IsLower(text[i + 2]))
+                    {
+                        continue;
+                    }
+                }
+
+                // 3. 最小有效长度保护：终结符前必须至少有 3 个有效字符，防止碎词过早断句
+                string prefix = text.Substring(0, i);
+                if (GetMeaningfulContentLength(prefix) < 3)
+                {
+                    continue;
+                }
+
                 int endIdx = i;
                 while (endIdx + 1 < text.Length && (IsTerminalDelimiter(text[endIdx + 1]) || IsCommaDelimiter(text[endIdx + 1])))
                 {
@@ -491,22 +517,30 @@ public partial class LiveCaptionsService : IDisposable
                 return endIdx;
             }
 
-            if (IsCommaDelimiter(c))
+            // 4. 超长句逗号兜底保护：只有当单句长度超过 40 个字符且遇到逗号时，才适度拆分
+            if (IsCommaDelimiter(c) && i >= 40)
             {
-                commaCount++;
-                if (commaCount >= 2)
+                int endIdx = i;
+                while (endIdx + 1 < text.Length && (IsCommaDelimiter(text[endIdx + 1]) || IsTerminalDelimiter(text[endIdx + 1])))
                 {
-                    int endIdx = i;
-                    while (endIdx + 1 < text.Length && (IsCommaDelimiter(text[endIdx + 1]) || IsTerminalDelimiter(text[endIdx + 1])))
-                    {
-                        endIdx++;
-                    }
-                    return endIdx;
+                    endIdx++;
                 }
+                return endIdx;
             }
         }
 
         return -1;
+    }
+
+    private static int GetMeaningfulContentLength(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return 0;
+        int count = 0;
+        foreach (char c in text)
+        {
+            if (char.IsLetterOrDigit(c)) count++;
+        }
+        return count;
     }
 
     private static bool IsDelimiterOrPunctuation(char c)
