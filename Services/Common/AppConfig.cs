@@ -80,6 +80,7 @@ public class AppConfig
     public string SpeechModelType { get; set; } = "tiny"; // "tiny", "base", "small"
     public string SpeechEngine { get; set; } = "LiveCaptions"; // "LiveCaptions", "Whisper"
     public bool LiveCaptionsHideNativeWindow { get; set; } = true;
+    public string LiveCaptionsLanguageCode { get; set; } = "zh-CN";
 
     // ==========================================
     // AI 翻译 (Ollama)

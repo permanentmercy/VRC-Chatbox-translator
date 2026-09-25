@@ -108,21 +108,33 @@
                 </Grid>
 
                 <!-- Windows 11 LiveCaptions 专属配置面板 -->
-                <StackPanel x:Name="LiveCaptionsPanel" Spacing="10" Visibility="Collapsed">
-                    <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button x:Name="ToggleLiveCaptionsButton"
-                                Click="ToggleLiveCaptionsButton_Click"
-                                ToolTipService.ToolTip="在屏幕上唤出或最小化 Windows 11 原生实时字幕窗口">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <FontIcon Glyph="&#xE737;" FontSize="14" />
-                                <TextBlock Text="呼出 / 隐藏系统字幕窗口" />
-                            </StackPanel>
-                        </Button>
-                        <CheckBox x:Name="LiveCaptionsHideNativeCheckBox" Content="自动隐藏caption"
-                                  IsChecked="True" Checked="LiveCaptionsHideNativeCheckBox_CheckChanged"
-                                  Unchecked="LiveCaptionsHideNativeCheckBox_CheckChanged"
-                                  ToolTipService.ToolTip="勾选后，开启时自动将系统自带的黑底字幕窗口最小化，避免遮挡视线" />
-                    </StackPanel>
+                <StackPanel x:Name="LiveCaptionsPanel" Spacing="14" Visibility="Collapsed">
+                    <Grid ColumnSpacing="20" RowSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="320" />
+                            <ColumnDefinition Width="320" />
+                        </Grid.ColumnDefinitions>
+
+                        <ComboBox x:Name="LiveCaptionsLanguageComboBox" Grid.Column="0" Header="实时字幕识别语言"
+                                  Width="300" HorizontalAlignment="Left"
+                                  SelectionChanged="LiveCaptionsLanguageComboBox_SelectionChanged"
+                                  ToolTipService.ToolTip="直接在程序内切换 Windows 11 实时字幕的识别语言，无需呼出系统字幕窗口" />
+
+                        <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Orientation="Horizontal" Spacing="12" Margin="0,0,0,2">
+                            <Button x:Name="ToggleLiveCaptionsButton"
+                                    Click="ToggleLiveCaptionsButton_Click"
+                                    ToolTipService.ToolTip="在屏幕上唤出或最小化 Windows 11 原生实时字幕窗口">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE737;" FontSize="14" />
+                                    <TextBlock Text="呼出 / 隐藏系统字幕窗口" />
+                                </StackPanel>
+                            </Button>
+                            <CheckBox x:Name="LiveCaptionsHideNativeCheckBox" Content="自动隐藏caption"
+                                      IsChecked="True" Checked="LiveCaptionsHideNativeCheckBox_CheckChanged"
+                                      Unchecked="LiveCaptionsHideNativeCheckBox_CheckChanged"
+                                      ToolTipService.ToolTip="勾选后，开启时自动将系统自带的黑底字幕窗口最小化，避免遮挡视线" />
+                        </StackPanel>
+                    </Grid>
                 </StackPanel>
 
                 <!-- 统一引擎状态 -->
@@ -139,7 +151,7 @@
                 BorderThickness="1" CornerRadius="8" Padding="18">
             <StackPanel Spacing="14">
                 <TextBlock Text="音频输入与监听设备" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-                <TextBlock Text="支持监听耳机/扬声器中其他玩家的声音 (Loopback)，或直接通过麦克风拾音" 
+                <TextBlock Text="支持监听耳机/扬声器中其他玩家的声音 (Loopback)，或直接通过麦克风拾音；支持【进程回路隔离】仅抓取 VRChat 声音并过滤背景音乐" 
                            Style="{StaticResource CaptionTextBlockStyle}" 
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
@@ -150,10 +162,10 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <ComboBox x:Name="AudioDeviceComboBox" Header="监听音频设备 (扬声器/耳机/麦克风)"
+                    <ComboBox x:Name="AudioDeviceComboBox" Header="监听音频设备 (扬声器/耳机/麦克风/游戏进程隔离)"
                               HorizontalAlignment="Stretch"
                               SelectionChanged="AudioDeviceComboBox_SelectionChanged"
-                              ToolTipService.ToolTip="选择需要监听转录的音频设备（支持扬声器/耳机 Loopback 监听及麦克风拾音）" />
+                              ToolTipService.ToolTip="选择需要监听转录的音频设备（支持扬声器/耳机 Loopback 监听、VRChat 游戏进程隔离捕获及麦克风拾音）" />
 
                     <Button x:Name="RefreshAudioDevicesButton" Grid.Column="1" VerticalAlignment="Bottom"
                             Content="刷新设备" Click="RefreshAudioDevicesButton_Click" Margin="0,0,0,1"

@@ -38,7 +38,7 @@ public partial class SpeechService : IDisposable
     private readonly SemaphoreSlim _modelSwitchLock = new(1, 1);
     private CancellationTokenSource? _listeningCts;
 
-    private WasapiCapture? _capture;
+    private IWaveIn? _capture;
     private BufferedWaveProvider? _bufferedWaveProvider;
     private SampleToWaveProvider16? _wave16;
 
@@ -91,48 +91,69 @@ public partial class SpeechService : IDisposable
             _currentEndpointId = audioEndpointId ?? string.Empty;
             _listeningCts = new CancellationTokenSource();
 
-            var enumerator = new MMDeviceEnumerator();
-            MMDevice? targetDevice = null;
-
-            if (!string.IsNullOrEmpty(audioEndpointId))
-            {
-                try
-                {
-                    targetDevice = enumerator.GetDevice(audioEndpointId);
-                }
-                catch { }
-            }
-
             bool isCapture = false;
-            if (targetDevice != null)
+            string deviceTypeDesc = "扬声器/耳机";
+            string deviceName = "系统默认设备";
+
+            if (!string.IsNullOrEmpty(audioEndpointId) && audioEndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase))
             {
-                isCapture = targetDevice.DataFlow == DataFlow.Capture || AudioDeviceService.IsCaptureEndpoint(targetDevice.ID);
+                string procName = audioEndpointId.Substring("process:".Length).Trim();
+                if (string.IsNullOrEmpty(procName)) procName = "VRChat";
+
+                var procCapture = await ProcessLoopbackCapture.CreateAsync(procName, msg => StatusChanged?.Invoke(msg));
+                procCapture.StatusNotice += msg => StatusChanged?.Invoke(msg);
+                _capture = procCapture;
+                deviceTypeDesc = "游戏进程隔离";
+                deviceName = $"{procName}.exe";
             }
             else
             {
-                try
-                {
-                    targetDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                }
-                catch
-                {
-                    targetDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-                    isCapture = true;
-                }
-            }
+                var enumerator = new MMDeviceEnumerator();
+                MMDevice? targetDevice = null;
 
-            if (targetDevice == null)
-            {
-                throw new InvalidOperationException("未找到可用的系统音频设备");
-            }
+                if (!string.IsNullOrEmpty(audioEndpointId))
+                {
+                    try
+                    {
+                        targetDevice = enumerator.GetDevice(audioEndpointId);
+                    }
+                    catch { }
+                }
 
-            if (isCapture)
-            {
-                _capture = new WasapiCapture(targetDevice);
-            }
-            else
-            {
-                _capture = new WasapiLoopbackCapture(targetDevice);
+                if (targetDevice != null)
+                {
+                    isCapture = targetDevice.DataFlow == DataFlow.Capture || AudioDeviceService.IsCaptureEndpoint(targetDevice.ID);
+                    deviceName = targetDevice.FriendlyName;
+                }
+                else
+                {
+                    try
+                    {
+                        targetDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                        deviceName = targetDevice.FriendlyName;
+                    }
+                    catch
+                    {
+                        targetDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+                        isCapture = true;
+                        deviceName = targetDevice.FriendlyName;
+                    }
+                }
+
+                if (targetDevice == null)
+                {
+                    throw new InvalidOperationException("未找到可用的系统音频设备");
+                }
+
+                if (isCapture)
+                {
+                    _capture = new WasapiCapture(targetDevice);
+                    deviceTypeDesc = "麦克风";
+                }
+                else
+                {
+                    _capture = new WasapiLoopbackCapture(targetDevice);
+                }
             }
 
             _bufferedWaveProvider = new BufferedWaveProvider(_capture.WaveFormat)
@@ -172,8 +193,7 @@ public partial class SpeechService : IDisposable
             _ = Task.Run(() => ProcessSentenceQueueLoopAsync(_listeningCts.Token));
             _ = Task.Run(() => ProcessLiveAudioLoopAsync(_listeningCts.Token));
 
-            string deviceTypeDesc = isCapture ? "麦克风" : "扬声器/耳机";
-            StatusChanged?.Invoke($"Whisper AI 实时字幕监听中 ({targetDevice.FriendlyName} [{deviceTypeDesc}] - {CurrentLanguageName})...");
+            StatusChanged?.Invoke($"Whisper AI 实时字幕监听中 ({deviceName} [{deviceTypeDesc}] - {CurrentLanguageName})...");
             return true;
         }
         catch (Exception ex)

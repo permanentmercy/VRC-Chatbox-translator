@@ -81,6 +81,20 @@ public partial class SettingsService
         }
     }
 
+    public string LiveCaptionsLanguageCode
+    {
+        get => string.IsNullOrWhiteSpace(Config.LiveCaptionsLanguageCode) ? "zh-CN" : Config.LiveCaptionsLanguageCode;
+        set
+        {
+            if (Config.LiveCaptionsLanguageCode != value)
+            {
+                Config.LiveCaptionsLanguageCode = value;
+                SaveConfigDebounced();
+                _ = LiveCaptionsService.SwitchLanguageAsync(value);
+            }
+        }
+    }
+
     public string ChineseVariant
     {
         get => SpeechService.ChineseVariant;

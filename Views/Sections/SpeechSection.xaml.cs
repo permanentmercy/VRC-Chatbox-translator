@@ -36,6 +36,7 @@ public sealed partial class SpeechSection : UserControl
         s.SpeechRecognitionStateChanged += OnSpeechRecognitionStateChanged;
 
         InitSpeechEngine(s.SpeechEngine);
+        InitLiveCaptionsLanguages(s.LiveCaptionsLanguageCode);
         InitSpeechModel(s.SpeechModelType);
         InitSpeechLanguages();
         InitChineseVariant(s.ChineseVariant);
@@ -137,6 +138,41 @@ public sealed partial class SpeechSection : UserControl
         else
         {
             SettingsService.Instance.LiveCaptionsService.RestoreNativeWindow();
+        }
+    }
+
+    private void InitLiveCaptionsLanguages(string? currentCode)
+    {
+        LiveCaptionsLanguageComboBox.Items.Clear();
+        var supported = LiveCaptionsService.SupportedLanguages;
+        int selectedIdx = 0;
+        string target = string.IsNullOrWhiteSpace(currentCode) ? "zh-CN" : currentCode;
+
+        for (int i = 0; i < supported.Count; i++)
+        {
+            var lang = supported[i];
+            var item = new ComboBoxItem
+            {
+                Content = $"{lang.DisplayName} [{lang.Code}]",
+                Tag = lang.Code
+            };
+            LiveCaptionsLanguageComboBox.Items.Add(item);
+
+            if (string.Equals(lang.Code, target, StringComparison.OrdinalIgnoreCase))
+            {
+                selectedIdx = i;
+            }
+        }
+
+        LiveCaptionsLanguageComboBox.SelectedIndex = selectedIdx;
+    }
+
+    private void LiveCaptionsLanguageComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        if (LiveCaptionsLanguageComboBox.SelectedItem is ComboBoxItem item && item.Tag is string code)
+        {
+            SettingsService.Instance.LiveCaptionsLanguageCode = code;
         }
     }
 
