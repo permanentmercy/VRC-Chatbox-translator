@@ -40,7 +40,7 @@
                             <ComboBox x:Name="SpeechEngineComboBox" Grid.Column="1" Header="识别引擎"
                                       Width="300" HorizontalAlignment="Left"
                                       SelectionChanged="SpeechEngineComboBox_SelectionChanged"
-                                      ToolTipService.ToolTip="选择语音识别后端引擎：Whisper 本地 AI 模型（独立离线推断）或 Windows 11 实时字幕（0 显存占用、原生极速）">
+                                      ToolTipService.ToolTip="选择语音识别后端模型：Whisper模型或 Windows 11 实时字幕">
                                 <ComboBoxItem Content="Whisper 本地 AI 模型" Tag="Whisper" />
                                 <ComboBoxItem Content="Windows 11 实时字幕" Tag="LiveCaptions" />
                             </ComboBox>
@@ -125,7 +125,7 @@
                                         <TextBlock Text="呼出 / 隐藏系统字幕窗口" />
                                     </StackPanel>
                                 </Button>
-                                <CheckBox x:Name="LiveCaptionsHideNativeCheckBox" Content="自动隐藏原生黑框 (仅在沉浸窗口显示)"
+                                <CheckBox x:Name="LiveCaptionsHideNativeCheckBox" Content="自动隐藏caption"
                                           IsChecked="True" Checked="LiveCaptionsHideNativeCheckBox_CheckChanged"
                                           Unchecked="LiveCaptionsHideNativeCheckBox_CheckChanged"
                                           ToolTipService.ToolTip="勾选后，开启时自动将系统自带的黑底字幕窗口最小化，避免遮挡视线" />
@@ -134,7 +134,7 @@
 
                         <!-- 统一引擎状态 -->
                         <StackPanel VerticalAlignment="Center" Spacing="2" Margin="0,4,0,0">
-                            <TextBlock Text="当前引擎状态" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="当前状态" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             <TextBlock x:Name="SpeechStatusTextBlock" Text="就绪" Style="{StaticResource BodyTextBlockStyle}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                         </StackPanel>
                     </StackPanel>

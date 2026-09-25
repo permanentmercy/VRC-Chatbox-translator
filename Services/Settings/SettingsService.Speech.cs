@@ -231,7 +231,7 @@ public partial class SettingsService
             {
                 SpeechStatus = string.Equals(SpeechEngine, "LiveCaptions", StringComparison.OrdinalIgnoreCase)
                     ? "正在启动 Windows 11 实时字幕监听..."
-                    : "正在初始化 Whisper AI 本地语音引擎...";
+                    : "正在初始化 Whisper 模型...";
                 SpeechStatusUpdated?.Invoke(SpeechStatus);
                 DisplaySettingsChanged?.Invoke();
                 await ApplySpeechStateAsync();

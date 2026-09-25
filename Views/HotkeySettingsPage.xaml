@@ -51,12 +51,12 @@
                     </StackPanel>
                 </Border>
 
-                <!-- 2) 沉浸式极简模式开关与热键 -->
+                <!-- 2) 沉浸式模式开关与热键 -->
                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                         BorderThickness="1" CornerRadius="8" Padding="18">
                     <StackPanel Spacing="14">
-                        <TextBlock Text="沉浸式极简悬浮窗" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                        <TextBlock Text="沉浸式悬浮窗" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
 
                         <Grid ColumnSpacing="16" RowSpacing="12">
                             <Grid.ColumnDefinitions>

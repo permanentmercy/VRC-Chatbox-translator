@@ -75,7 +75,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Spacing="2">
-                                <TextBlock Text="头顶常驻与动态模板" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                                <TextBlock Text="常驻模板" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
                                 <TextBlock Text="在文本中通过 {变量名} 引用动态内容。识别、翻译或外部程序通过 API 赋值后，自动刷新上屏至游戏头顶。"
                                            Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                             </StackPanel>

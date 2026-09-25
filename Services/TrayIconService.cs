@@ -177,7 +177,7 @@ public class TrayIconService : IDisposable
         if (hMenu == IntPtr.Zero) return;
 
         AppendMenu(hMenu, MF_STRING, CMD_OPEN, "打开主界面");
-        AppendMenu(hMenu, MF_STRING, CMD_IMMERSIVE, "切换沉浸极简模式");
+        AppendMenu(hMenu, MF_STRING, CMD_IMMERSIVE, "简洁模式");
         AppendMenu(hMenu, MF_SEPARATOR, 0, string.Empty);
         AppendMenu(hMenu, MF_STRING, CMD_QUIT, "退出程序");
 

@@ -85,7 +85,7 @@ public partial class SpeechService : IDisposable
                 await StopInternalAsync();
             }
 
-            StatusChanged?.Invoke("正在启动 Whisper AI 实时流式识别引擎...");
+            StatusChanged?.Invoke("正在启动 Whisper 模型...");
             await EnsureProcessorAsync(languageTag);
 
             _currentEndpointId = audioEndpointId ?? string.Empty;
