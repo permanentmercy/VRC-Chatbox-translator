@@ -48,6 +48,8 @@ public class VariableService
     {
         RegisterBuiltin("speech", "语音识别文本", "从麦克风或系统扬声器读取的最新语音识别文本");
         RegisterBuiltin("translation", "AI 翻译结果", "本地 Ollama AI 翻译返回的最新目标语言文本");
+        RegisterBuiltin("language", "当前字幕语言", "当前语音识别/字幕引擎生效的语言名称 (如 中文, 日本語, English)");
+        RegisterBuiltin("language_code", "当前字幕语言代码", "当前字幕引擎生效的语言代码 (如 zh-CN, ja-JP, en-US)");
         RegisterBuiltin("time", "当前时间", "当前系统时钟 (HH:mm)");
     }
 
@@ -123,6 +125,20 @@ public class VariableService
             return DateTime.Now.ToString("HH:mm");
         }
 
+        if (string.Equals(name, "lang", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "caption_lang", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "subtitle_lang", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "字幕语言", StringComparison.OrdinalIgnoreCase))
+        {
+            name = "language";
+        }
+        else if (string.Equals(name, "lang_code", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(name, "caption_lang_code", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(name, "字幕语言代码", StringComparison.OrdinalIgnoreCase))
+        {
+            name = "language_code";
+        }
+
         if (_variables.TryGetValue(name, out var item))
         {
             return item.Value ?? string.Empty;
@@ -137,7 +153,24 @@ public class VariableService
     {
         if (string.IsNullOrEmpty(template) || string.IsNullOrEmpty(name)) return false;
         name = name.Trim().Trim('{', '}').Trim();
-        return template.IndexOf($"{{{name}}}", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (template.IndexOf($"{{{name}}}", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+
+        if (string.Equals(name, "language", StringComparison.OrdinalIgnoreCase))
+        {
+            return template.IndexOf("{lang}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   template.IndexOf("{caption_lang}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   template.IndexOf("{subtitle_lang}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   template.IndexOf("{字幕语言}", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        if (string.Equals(name, "language_code", StringComparison.OrdinalIgnoreCase))
+        {
+            return template.IndexOf("{lang_code}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   template.IndexOf("{caption_lang_code}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   template.IndexOf("{字幕语言代码}", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -166,7 +199,22 @@ public class VariableService
                 return DateTime.Now.ToString("HH:mm");
             }
 
-            if (_variables.TryGetValue(varName, out var item))
+            string lookupName = varName;
+            if (string.Equals(varName, "lang", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(varName, "caption_lang", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(varName, "subtitle_lang", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(varName, "字幕语言", StringComparison.OrdinalIgnoreCase))
+            {
+                lookupName = "language";
+            }
+            else if (string.Equals(varName, "lang_code", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(varName, "caption_lang_code", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(varName, "字幕语言代码", StringComparison.OrdinalIgnoreCase))
+            {
+                lookupName = "language_code";
+            }
+
+            if (_variables.TryGetValue(lookupName, out var item))
             {
                 return item.Value ?? string.Empty;
             }

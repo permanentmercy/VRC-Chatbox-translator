@@ -61,6 +61,7 @@ public partial class SettingsService
             {
                 Config.SpeechEngine = value;
                 SaveConfigDebounced();
+                UpdateLanguageVariable();
                 if (IsSpeechRecognitionEnabled)
                 {
                     _ = ApplySpeechStateAsync();
@@ -91,6 +92,7 @@ public partial class SettingsService
             {
                 Config.LiveCaptionsLanguageCode = value;
                 SaveConfigDebounced();
+                UpdateLanguageVariable();
                 _ = LiveCaptionsService.SwitchLanguageAsync(value);
             }
         }
@@ -103,7 +105,48 @@ public partial class SettingsService
         {
             Config.LiveCaptionsLanguageCode = norm;
             SaveConfigDebounced();
+            UpdateLanguageVariable();
         }
+    }
+
+    public void UpdateLanguageVariable()
+    {
+        string langName = "中文";
+        string langCode = "zh-CN";
+
+        if (string.Equals(SpeechEngine, "Whisper", StringComparison.OrdinalIgnoreCase))
+        {
+            string tag = string.IsNullOrWhiteSpace(SpeechLanguageTag) ? "auto" : SpeechLanguageTag;
+            langCode = tag;
+            langName = tag switch
+            {
+                "zh" => "中文",
+                "en" => "English",
+                "ja" => "日本語",
+                "ko" => "한국어",
+                "ru" => "Русский",
+                "fr" => "Français",
+                "de" => "Deutsch",
+                "es" => "Español",
+                _ => "自动识别"
+            };
+        }
+        else
+        {
+            langCode = LiveCaptionsLanguageCode;
+            var match = LiveCaptionsService.SupportedLanguages.FirstOrDefault(l => string.Equals(l.Code, langCode, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                langName = match.MatchKeyword;
+            }
+            else
+            {
+                langName = langCode;
+            }
+        }
+
+        VariableService.SetVariable("language", langName, "当前字幕语言", "当前语音识别/字幕引擎生效的语言名称 (如 中文, 日本語, English)");
+        VariableService.SetVariable("language_code", langCode, "当前字幕语言代码", "当前字幕引擎生效的语言代码 (如 zh-CN, ja-JP, en-US)");
     }
 
     public bool LiveCaptionsAutoDetectLanguage
@@ -358,7 +401,7 @@ public partial class SettingsService
     public string SpeechLanguageTag
     {
         get => Config.SpeechLanguageTag;
-        set { if (Config.SpeechLanguageTag != value) { Config.SpeechLanguageTag = value; SaveConfigDebounced(); } }
+        set { if (Config.SpeechLanguageTag != value) { Config.SpeechLanguageTag = value; SaveConfigDebounced(); UpdateLanguageVariable(); } }
     }
     public string AudioInputDeviceId
     {
@@ -738,6 +781,8 @@ public partial class SettingsService
         {
             PersistentTextService.RestartLoop(VariableService, OscService);
         }
+
+        UpdateLanguageVariable();
     }
 
     public void ToggleImmersiveMode()
