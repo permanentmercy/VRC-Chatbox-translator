@@ -95,6 +95,29 @@ public partial class SettingsService
         }
     }
 
+    public string TargetAudioProcessName
+    {
+        get => string.IsNullOrWhiteSpace(Config.TargetAudioProcessName) ? "VRChat" : Config.TargetAudioProcessName;
+        set
+        {
+            var clean = AudioProcessService.NormalizeProcessName(value);
+            if (string.IsNullOrWhiteSpace(clean)) clean = "VRChat";
+
+            if (!string.Equals(Config.TargetAudioProcessName, clean, StringComparison.OrdinalIgnoreCase))
+            {
+                Config.TargetAudioProcessName = clean;
+                SaveConfigDebounced();
+                TargetAudioProcessChanged?.Invoke(clean);
+                if (IsSpeechRecognitionEnabled && AudioInputDeviceId != null && AudioInputDeviceId.StartsWith("process:", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = SwitchAudioDeviceAsync("process:" + clean, $"[游戏进程隔离] 仅监听游戏: {clean}");
+                }
+            }
+        }
+    }
+
+    public event Action<string>? TargetAudioProcessChanged;
+
     public string ChineseVariant
     {
         get => SpeechService.ChineseVariant;

@@ -54,11 +54,14 @@ public static class AudioDeviceService
                 }
                 catch { }
 
-                // 0. 优先插入针对 VRChat 进程的原生回路隔离捕获项
+                // 0. 优先插入针对指定进程的原生回路隔离捕获项
+                string targetProc = SettingsService.Instance.TargetAudioProcessName;
+                if (string.IsNullOrWhiteSpace(targetProc)) targetProc = "VRChat";
+
                 list.Add(new AudioDeviceInfo(
-                    Id: "process:VRChat",
-                    EndpointId: "process:VRChat",
-                    Name: "[游戏进程隔离] 仅监听游戏: VRChat (过滤音乐与外部杂音)",
+                    Id: "process:" + targetProc,
+                    EndpointId: "process:" + targetProc,
+                    Name: $"[进程隔离监听] 仅监听游戏/应用: {targetProc} (过滤音乐与外部杂音)",
                     IsDefault: false));
 
                 // 1. 扬声器 / 耳机 (Render)

@@ -1,3 +1,5 @@
+#pragma warning disable CA1416
+
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -11,6 +13,8 @@ public sealed partial class SpeechSection : UserControl
 {
     private bool _isInitializing = true;
     private List<AudioDeviceInfo> _audioDevices = new();
+    private DispatcherTimer? _processPollTimer;
+    private bool _lastConfiguredProcessRunning = false;
 
     public SpeechSection()
     {
@@ -23,6 +27,9 @@ public sealed partial class SpeechSection : UserControl
     {
         SettingsService.Instance.SpeechStatusUpdated -= OnSpeechStatusUpdated;
         SettingsService.Instance.SpeechRecognitionStateChanged -= OnSpeechRecognitionStateChanged;
+        SettingsService.Instance.TargetAudioProcessChanged -= OnTargetAudioProcessChanged;
+        ProcessLoopbackCapture.ProcessStateChanged -= OnProcessStateChanged;
+        StopProcessPollTimer();
     }
 
     private async void SpeechSection_Loaded(object sender, RoutedEventArgs e)
@@ -34,6 +41,8 @@ public sealed partial class SpeechSection : UserControl
         SpeechStatusTextBlock.Text = s.SpeechStatus;
         s.SpeechStatusUpdated += OnSpeechStatusUpdated;
         s.SpeechRecognitionStateChanged += OnSpeechRecognitionStateChanged;
+        s.TargetAudioProcessChanged += OnTargetAudioProcessChanged;
+        ProcessLoopbackCapture.ProcessStateChanged += OnProcessStateChanged;
 
         InitSpeechEngine(s.SpeechEngine);
         InitLiveCaptionsLanguages(s.LiveCaptionsLanguageCode);
@@ -42,8 +51,10 @@ public sealed partial class SpeechSection : UserControl
         InitChineseVariant(s.ChineseVariant);
         InitGpuMode(s.GpuUsageMode);
         InitSpeechSliceDuration(s.SpeechSliceDurationSeconds);
+        InitTargetProcesses(s.TargetAudioProcessName);
         await InitAudioDevicesAsync();
         InitSubtitleQueueCapacity(s.SubtitleQueueCapacity);
+        StartProcessPollTimer();
 
         _isInitializing = false;
     }
@@ -106,7 +117,8 @@ public sealed partial class SpeechSection : UserControl
     {
         bool isLiveCaptions = string.Equals(engine, "LiveCaptions", StringComparison.OrdinalIgnoreCase);
         WhisperOptionsGrid.Visibility = isLiveCaptions ? Visibility.Collapsed : Visibility.Visible;
-        AudioDeviceCard.Visibility = isLiveCaptions ? Visibility.Collapsed : Visibility.Visible;
+        AudioDeviceCard.Visibility = Visibility.Visible;
+        LiveCaptionsAudioHintInfoBar.IsOpen = isLiveCaptions;
         LiveCaptionsPanel.Visibility = isLiveCaptions ? Visibility.Visible : Visibility.Collapsed;
         LiveCaptionsHideNativeCheckBox.IsChecked = SettingsService.Instance.LiveCaptionsHideNativeWindow;
 
@@ -349,6 +361,7 @@ public sealed partial class SpeechSection : UserControl
 
             if (!string.IsNullOrEmpty(currentEndpointId) &&
                 (string.Equals(d.EndpointId, currentEndpointId, StringComparison.OrdinalIgnoreCase) ||
+                 (currentEndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase) && d.EndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase)) ||
                  string.Equals(d.Id, currentEndpointId, StringComparison.OrdinalIgnoreCase)))
             {
                 selectedIndex = i + 1;
@@ -383,6 +396,152 @@ public sealed partial class SpeechSection : UserControl
         _isInitializing = true;
         await InitAudioDevicesAsync();
         _isInitializing = false;
+    }
+
+    private void InitTargetProcesses(string? targetName)
+    {
+        string name = string.IsNullOrWhiteSpace(targetName) ? "VRChat" : targetName;
+        var candidates = AudioProcessService.GetCandidateProcesses(name);
+
+        TargetProcessComboBox.Items.Clear();
+        int selectedIdx = 0;
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            var c = candidates[i];
+            var item = new ComboBoxItem
+            {
+                Content = c.DisplayName,
+                Tag = c.ProcessName
+            };
+            TargetProcessComboBox.Items.Add(item);
+
+            if (string.Equals(c.ProcessName, name, StringComparison.OrdinalIgnoreCase))
+            {
+                selectedIdx = i;
+                _lastConfiguredProcessRunning = c.IsRunning;
+            }
+        }
+
+        if (TargetProcessComboBox.Items.Count > 0)
+        {
+            TargetProcessComboBox.SelectedIndex = selectedIdx;
+        }
+
+        UpdateProcessStatusDisplay(name, _lastConfiguredProcessRunning);
+    }
+
+    private void UpdateProcessStatusDisplay(string processName, bool isRunning, int pid = 0)
+    {
+        if (isRunning)
+        {
+            if (pid <= 0) AudioProcessService.IsProcessRunning(processName, out pid);
+            ProcessStatusText.Text = $"已连接: {processName} (PID: {pid}) - 纯净隔离监听就绪";
+            ProcessStatusText.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorSuccessBrush"];
+        }
+        else
+        {
+            ProcessStatusText.Text = $"未找到指定进程: {processName} (已接入系统扬声器，后台每3秒自动轮询，启动游戏将自动连接)";
+            ProcessStatusText.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
+        }
+    }
+
+    private void TargetProcessComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        if (TargetProcessComboBox.SelectedItem is ComboBoxItem item && item.Tag is string procName)
+        {
+            ApplyTargetProcess(procName);
+        }
+    }
+
+    private void TargetProcessComboBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_isInitializing) return;
+        string text = TargetProcessComboBox.Text;
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            string clean = AudioProcessService.NormalizeProcessName(text);
+            if (!string.IsNullOrEmpty(clean) && !string.Equals(clean, SettingsService.Instance.TargetAudioProcessName, StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyTargetProcess(clean);
+            }
+        }
+    }
+
+    private void ApplyTargetProcess(string procName)
+    {
+        SettingsService.Instance.TargetAudioProcessName = procName;
+        bool isRunning = AudioProcessService.IsProcessRunning(procName, out int pid);
+        _lastConfiguredProcessRunning = isRunning;
+        UpdateProcessStatusDisplay(procName, isRunning, pid);
+        _ = InitAudioDevicesAsync();
+    }
+
+    private async void RefreshProcessesButton_Click(object sender, RoutedEventArgs e)
+    {
+        string current = SettingsService.Instance.TargetAudioProcessName;
+        bool wasRunning = _lastConfiguredProcessRunning;
+        bool isRunning = AudioProcessService.IsProcessRunning(current, out int pid);
+        _lastConfiguredProcessRunning = isRunning;
+
+        InitTargetProcesses(current);
+
+        if (isRunning && !wasRunning)
+        {
+            await SettingsService.Instance.SpeechService.TryReconnectProcessAsync();
+        }
+    }
+
+    private void StartProcessPollTimer()
+    {
+        StopProcessPollTimer();
+        _processPollTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(3)
+        };
+        _processPollTimer.Tick += async (s, e) =>
+        {
+            string target = SettingsService.Instance.TargetAudioProcessName;
+            bool isRunning = AudioProcessService.IsProcessRunning(target, out int pid);
+            if (isRunning != _lastConfiguredProcessRunning)
+            {
+                _lastConfiguredProcessRunning = isRunning;
+                InitTargetProcesses(target);
+                if (isRunning)
+                {
+                    await SettingsService.Instance.SpeechService.TryReconnectProcessAsync();
+                }
+            }
+        };
+        _processPollTimer.Start();
+    }
+
+    private void StopProcessPollTimer()
+    {
+        if (_processPollTimer != null)
+        {
+            _processPollTimer.Stop();
+            _processPollTimer = null;
+        }
+    }
+
+    private void OnTargetAudioProcessChanged(string newProcName)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            InitTargetProcesses(newProcName);
+            _ = InitAudioDevicesAsync();
+        });
+    }
+
+    private void OnProcessStateChanged(string procName, bool isConnected, int pid)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _lastConfiguredProcessRunning = isConnected;
+            UpdateProcessStatusDisplay(procName, isConnected, pid);
+        });
     }
 
     private void InitSubtitleQueueCapacity(int capacity)

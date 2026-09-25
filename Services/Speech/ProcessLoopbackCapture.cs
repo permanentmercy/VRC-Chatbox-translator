@@ -41,6 +41,8 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
     public event EventHandler<StoppedEventArgs>? RecordingStopped;
     public event Action<string>? StatusNotice;
 
+    public static event Action<string, bool, int>? ProcessStateChanged;
+
     private ProcessLoopbackCapture(string processName, WasapiRecorder recorder, bool isProcessFound, int targetPid)
     {
         _processName = processName;
@@ -68,6 +70,7 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
                 var recorder = await builder.BuildAsync();
 
                 statusCallback?.Invoke($"已锁定进程: {processName} (PID: {targetProc.Id})，开启纯净隔离音频捕获");
+                ProcessStateChanged?.Invoke(processName, true, targetProc.Id);
                 return new ProcessLoopbackCapture(processName, recorder, true, targetProc.Id);
             }
             catch (Exception ex)
@@ -84,6 +87,7 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
         // 回退至系统默认输出回路
         var fallbackBuilder = new WasapiRecorderBuilder().WithLoopbackCapture();
         var fallbackRecorder = await fallbackBuilder.BuildAsync();
+        ProcessStateChanged?.Invoke(processName, false, 0);
         return new ProcessLoopbackCapture(processName, fallbackRecorder, false, 0);
     }
 
@@ -143,6 +147,51 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
         RecordingStopped?.Invoke(this, new StoppedEventArgs());
     }
 
+    public async Task<bool> TrySwitchToProcessAsync()
+    {
+        if (_isProcessFound) return true;
+        try
+        {
+            var procs = Process.GetProcessesByName(_processName);
+            if (procs.Length == 0) return false;
+
+            var proc = procs[0];
+            StatusNotice?.Invoke($"检测到 {_processName} 已启动 (PID: {proc.Id})，正在无缝切换至隔离音频流...");
+
+            var builder = new WasapiRecorderBuilder()
+                .WithProcessLoopback((uint)proc.Id, ProcessLoopbackMode.IncludeTargetProcessTree);
+            var newRecorder = await builder.BuildAsync();
+
+            var oldRecorder = _recorder;
+            if (oldRecorder != null)
+            {
+                DetachRecorderEvents(oldRecorder);
+                try { oldRecorder.StopRecording(); } catch { }
+                oldRecorder.Dispose();
+            }
+
+            _recorder = newRecorder;
+            _targetPid = proc.Id;
+            _isProcessFound = true;
+            _waveFormat = newRecorder.WaveFormat;
+            AttachRecorderEvents(_recorder);
+
+            if (_isRecording)
+            {
+                _recorder.StartRecording();
+            }
+
+            StatusNotice?.Invoke($"已成功锁定 {_processName}，现已过滤全部音乐与外部杂音");
+            ProcessStateChanged?.Invoke(_processName, true, proc.Id);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[ProcessLoopbackCapture] TrySwitchToProcess error: {ex.Message}");
+            return false;
+        }
+    }
+
     private void StartProcessWatcher()
     {
         StopProcessWatcher();
@@ -156,36 +205,8 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
                 try
                 {
                     await Task.Delay(3000, token);
-                    var procs = Process.GetProcessesByName(_processName);
-                    if (procs.Length > 0)
+                    if (await TrySwitchToProcessAsync())
                     {
-                        var proc = procs[0];
-                        StatusNotice?.Invoke($"检测到 {_processName} 已启动 (PID: {proc.Id})，正在无缝切换至隔离音频流...");
-
-                        var builder = new WasapiRecorderBuilder()
-                            .WithProcessLoopback((uint)proc.Id, ProcessLoopbackMode.IncludeTargetProcessTree);
-                        var newRecorder = await builder.BuildAsync();
-
-                        var oldRecorder = _recorder;
-                        if (oldRecorder != null)
-                        {
-                            DetachRecorderEvents(oldRecorder);
-                            try { oldRecorder.StopRecording(); } catch { }
-                            oldRecorder.Dispose();
-                        }
-
-                        _recorder = newRecorder;
-                        _targetPid = proc.Id;
-                        _isProcessFound = true;
-                        _waveFormat = newRecorder.WaveFormat;
-                        AttachRecorderEvents(_recorder);
-
-                        if (_isRecording)
-                        {
-                            _recorder.StartRecording();
-                        }
-
-                        StatusNotice?.Invoke($"已成功锁定 {_processName}，现已过滤全部音乐与外部杂音");
                         break;
                     }
                 }

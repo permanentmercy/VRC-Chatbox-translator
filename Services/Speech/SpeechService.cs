@@ -98,6 +98,7 @@ public partial class SpeechService : IDisposable
             if (!string.IsNullOrEmpty(audioEndpointId) && audioEndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase))
             {
                 string procName = audioEndpointId.Substring("process:".Length).Trim();
+                if (string.IsNullOrEmpty(procName)) procName = SettingsService.Instance.TargetAudioProcessName;
                 if (string.IsNullOrEmpty(procName)) procName = "VRChat";
 
                 var procCapture = await ProcessLoopbackCapture.CreateAsync(procName, msg => StatusChanged?.Invoke(msg));
@@ -283,6 +284,14 @@ public partial class SpeechService : IDisposable
 
         StatusChanged?.Invoke("语音识别已停止");
         return Task.CompletedTask;
+    }
+
+    public async Task TryReconnectProcessAsync()
+    {
+        if (_capture is ProcessLoopbackCapture plc)
+        {
+            await plc.TrySwitchToProcessAsync();
+        }
     }
 
     public void Dispose()

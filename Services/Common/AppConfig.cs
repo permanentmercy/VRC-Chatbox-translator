@@ -81,6 +81,7 @@ public class AppConfig
     public string SpeechEngine { get; set; } = "LiveCaptions"; // "LiveCaptions", "Whisper"
     public bool LiveCaptionsHideNativeWindow { get; set; } = true;
     public string LiveCaptionsLanguageCode { get; set; } = "zh-CN";
+    public string TargetAudioProcessName { get; set; } = "VRChat";
 
     // ==========================================
     // AI 翻译 (Ollama)

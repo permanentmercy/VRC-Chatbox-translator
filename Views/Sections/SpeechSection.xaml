@@ -145,15 +145,20 @@
             </StackPanel>
         </Border>
 
-        <!-- 卡片 2: 音频监听设备 (仅 Whisper 模式生效) -->
+        <!-- 卡片 2: 音频监听设备与目标进程隔离 -->
         <Border x:Name="AudioDeviceCard" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="1" CornerRadius="8" Padding="18">
             <StackPanel Spacing="14">
-                <TextBlock Text="音频输入与监听设备" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-                <TextBlock Text="支持监听耳机/扬声器中其他玩家的声音 (Loopback)，或直接通过麦克风拾音；支持【进程回路隔离】仅抓取 VRChat 声音并过滤背景音乐" 
+                <TextBlock Text="音频输入与目标进程隔离" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                <TextBlock Text="支持监听耳机/扬声器中其他玩家的声音 (Loopback)，或直接通过麦克风拾音；支持【进程回路隔离】仅抓取指定游戏/应用发出的声音并彻底过滤背景音乐杂音" 
                            Style="{StaticResource CaptionTextBlockStyle}" 
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                <!-- 针对 Windows 11 实时字幕模式下的提示信息 -->
+                <InfoBar x:Name="LiveCaptionsAudioHintInfoBar" IsOpen="False" IsClosable="False" Severity="Informational"
+                         Title="Windows 实时字幕限制提示"
+                         Message="Windows 11 实时字幕由系统内置引擎驱动，微软原生仅监听全局默认扬声器或麦克风。若需使用下方的【单进程音频隔离】彻底过滤音乐与外部杂音，请在上方将识别引擎切换为【Whisper 本地 AI 模型】。" />
 
                 <!-- 固定宽度的设备选择组，杜绝重排抖动 -->
                 <Grid ColumnSpacing="8" Width="480" HorizontalAlignment="Left">
@@ -162,15 +167,51 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <ComboBox x:Name="AudioDeviceComboBox" Header="监听音频设备 (扬声器/耳机/麦克风/游戏进程隔离)"
+                    <ComboBox x:Name="AudioDeviceComboBox" Header="监听音频模式 / 设备"
                               HorizontalAlignment="Stretch"
                               SelectionChanged="AudioDeviceComboBox_SelectionChanged"
-                              ToolTipService.ToolTip="选择需要监听转录的音频设备（支持扬声器/耳机 Loopback 监听、VRChat 游戏进程隔离捕获及麦克风拾音）" />
+                              ToolTipService.ToolTip="选择需要监听转录的音频设备或进程隔离模式" />
 
                     <Button x:Name="RefreshAudioDevicesButton" Grid.Column="1" VerticalAlignment="Bottom"
                             Content="刷新设备" Click="RefreshAudioDevicesButton_Click" Margin="0,0,0,1"
                             ToolTipService.ToolTip="重新扫描系统扬声器与音频播放设备" />
                 </Grid>
+
+                <!-- 目标隔离进程选择面板 -->
+                <Border x:Name="ProcessSelectionPanel" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="6" Padding="14">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="目标隔离进程设置" FontWeight="SemiBold" FontSize="14" />
+                        <TextBlock Text="选择或输入需要单独监听的游戏/程序名称。系统将彻底过滤背景音乐、B站视频等其他程序的所有声音。"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                        <Grid ColumnSpacing="8" Width="480" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <ComboBox x:Name="TargetProcessComboBox" Header="目标监听进程"
+                                      IsEditable="True"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="TargetProcessComboBox_SelectionChanged"
+                                      LostFocus="TargetProcessComboBox_LostFocus"
+                                      ToolTipService.ToolTip="选择正在运行的音频进程，或直接在此输入进程名 (例如 VRChat)" />
+
+                            <Button x:Name="RefreshProcessesButton" Grid.Column="1" VerticalAlignment="Bottom"
+                                    Content="刷新进程" Click="RefreshProcessesButton_Click" Margin="0,0,0,1"
+                                    ToolTipService.ToolTip="重新扫描系统活动音频进程与运行状态" />
+                        </Grid>
+
+                        <!-- 进程连接与自动轮询状态 -->
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,2,0,0">
+                            <TextBlock Text="进程连接状态:" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProcessStatusText" Text="未检测" Style="{StaticResource CaptionTextBlockStyle}" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </Border>
 
