@@ -69,7 +69,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Spacing="2">
                         <TextBlock Text="常驻模板" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-                        <TextBlock Text="在文本中通过 {变量名} 引用动态内容，使用 [] 标注瞬态文本 (仅变量更新时临时保留，过期自动隐藏)"
+                        <TextBlock Text="在文本中通过 {变量名} 引用动态内容，使用 [文本] 标注的文本将具有有效期"
                                    Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                     </StackPanel>
                     <ToggleSwitch x:Name="PersistentTextSwitch" Grid.Column="1" VerticalAlignment="Center"
@@ -92,7 +92,7 @@
                             <FontIcon Glyph="&#xE72C;" FontSize="12" />
                         </Button>
 
-                        <TextBlock Text="[] 标注保留:" Margin="12,0,0,0" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="标注保留时长:" Margin="12,0,0,0" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <ComboBox x:Name="TransientDurationComboBox" Width="130"
                                   SelectionChanged="TransientDurationComboBox_SelectionChanged"
                                   ToolTipService.ToolTip="使用 [] 标注的内容 (如 [翻译: {translation}]) 仅在变量更新时临时显示指定秒数，过期后自动隐藏恢复纯常驻">
