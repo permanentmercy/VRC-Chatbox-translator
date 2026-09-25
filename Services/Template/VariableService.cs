@@ -210,8 +210,8 @@ public class VariableService
     {
         if (string.IsNullOrEmpty(template)) return string.Empty;
 
-        // 1. 将显式换行标识（{\n}, {\N}, {newline}, {换行}）转换为受控安全占位符
-        string processed = Regex.Replace(template, @"\{(\\n|newline|换行)\}", "\uE000", RegexOptions.IgnoreCase);
+        // 1. 将显式换行标识（{\n}, \n, {\N}, {newline}, {换行}）转换为受控安全占位符
+        string processed = Regex.Replace(template, @"\{(\\n|newline|换行)\}|\\n", "\uE000", RegexOptions.IgnoreCase);
 
         // 2. 将模板内所有的普通物理换行（回车）转为空格，避免直接发送物理换行到游戏内
         processed = processed.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');

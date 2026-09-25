@@ -74,8 +74,11 @@ public class PersistentTextService : IDisposable
     {
         if (string.IsNullOrEmpty(template)) return string.Empty;
 
-        // 使用 MatchEvaluator 逐个独立评估每一个中括号块
-        string processed = Regex.Replace(template, @"\[([^\]]+)\]", match =>
+        // 1. 先将显式换行标识（{\n}, \n, {newline}, {换行}）预先转换为受控安全占位符，防止被后续分隔符清洗破坏
+        string processed = Regex.Replace(template, @"\{(\\n|newline|换行)\}|\\n", "\uE000", RegexOptions.IgnoreCase);
+
+        // 2. 使用 MatchEvaluator 逐个独立评估每一个中括号块
+        processed = Regex.Replace(processed, @"\[([^\]]+)\]", match =>
         {
             string innerContent = match.Groups[1].Value;
 
@@ -115,12 +118,12 @@ public class PersistentTextService : IDisposable
             }
         });
 
-        // 智能清洗遗留的多余分隔符 (比如连续的 " |  | " 归一化为 " | ")
-        processed = Regex.Replace(processed, @"(\s*[\|／/\\,\-]\s*)+", " | ");
-        // 清洗换行标记周围残留的分隔符 (例如 " | {\n}" 或 "{\n} | ")
-        processed = Regex.Replace(processed, @"\s*\|\s*\{(\\n|newline|换行)\}", "{$1}", RegexOptions.IgnoreCase);
-        processed = Regex.Replace(processed, @"\{(\\n|newline|换行)\}\s*\|\s*", "{$1}", RegexOptions.IgnoreCase);
-        processed = processed.Trim(' ', '|', '-', '/', '\\', ',');
+        // 3. 智能清洗遗留的多余分隔符 (注意：绝不包含反斜杠，避免破坏转义)
+        processed = Regex.Replace(processed, @"(\s*[\|／/,\-]\s*)+", " | ");
+        // 4. 清理换行占位符周围残留的多余分隔符 (例如 " | <NL>" 或 "<NL> | ")
+        processed = Regex.Replace(processed, @"\s*\|\s*\uE000", "\uE000");
+        processed = Regex.Replace(processed, @"\uE000\s*\|\s*", "\uE000");
+        processed = processed.Trim(' ', '|', '-', '/', ',');
         return processed;
     }
 

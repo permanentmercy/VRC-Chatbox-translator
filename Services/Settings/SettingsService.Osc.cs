@@ -76,7 +76,8 @@ public partial class SettingsService
                     }
 
                     // 立即更新游戏内头顶气泡（逐字上屏，静音，不刷屏日志）
-                    await OscService.SendChatboxMessageAsync(rawText, direct: true, playSound: false, recordLog: false);
+                    string textToSend = System.Text.RegularExpressions.Regex.Replace(rawText ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    await OscService.SendChatboxMessageAsync(textToSend, direct: true, playSound: false, recordLog: false);
                     _lastOscSendTime = DateTime.UtcNow;
 
                     lock (_typingLock)
@@ -185,8 +186,9 @@ public partial class SettingsService
                     await Task.Delay(110 - elapsed);
                 }
 
-                // 发送最终确认消息（包含声音配置并计入日志）
-                bool result = await OscService.SendChatboxMessageAsync(text, IsDirectSendEnabled, IsSoundEnabled, recordLog: true);
+                // 发送最终确认消息（包含声音配置并计入日志，确保任何显式换行标记解析为真实换行）
+                string finalMsg = System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                bool result = await OscService.SendChatboxMessageAsync(finalMsg, IsDirectSendEnabled, IsSoundEnabled, recordLog: true);
                 _lastOscSendTime = DateTime.UtcNow;
                 PersistentTextService.NotifyUserSentMessage();
 
@@ -212,7 +214,8 @@ public partial class SettingsService
     public async Task<bool> SendMessageAsync(string text)
     {
         PersistentTextService.NotifyUserSentMessage();
-        return await OscService.SendChatboxMessageAsync(text, IsDirectSendEnabled, IsSoundEnabled);
+        string finalMsg = System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return await OscService.SendChatboxMessageAsync(finalMsg, IsDirectSendEnabled, IsSoundEnabled);
     }
 
     public async Task<bool> SetTypingAsync(bool isTyping)
