@@ -1,3 +1,4 @@
+using System;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -9,11 +10,13 @@ namespace VrcChatboxDemo.Views;
 public sealed partial class InteractionSettingsPage : Page
 {
     private bool _isInitializing = true;
+    private DispatcherTimer? _statusUpdateTimer;
 
     public InteractionSettingsPage()
     {
         InitializeComponent();
         Loaded += InteractionSettingsPage_Loaded;
+        Unloaded += InteractionSettingsPage_Unloaded;
     }
 
     private void InteractionSettingsPage_Loaded(object sender, RoutedEventArgs e)
@@ -31,9 +34,122 @@ public sealed partial class InteractionSettingsPage : Page
         PersistentTextSwitch.IsOn = s.IsPersistentTextEnabled;
         PersistentTextBox.Text = s.PersistentCustomText ?? string.Empty;
         PersistentTextBox.IsEnabled = s.IsPersistentTextEnabled;
-        UpdatePersistentCharCount();
+
+        InGameAvoidanceCheckBox.IsChecked = s.InGameAvoidanceEnabled;
+        AvoidanceSecondsNumberBox.Value = s.InGameAvoidanceSeconds;
+
+        LoadVariablesToComboBox();
+        UpdateCharCount();
+
+        // 注册变量事件监听
+        s.VariableService.VariablesListChanged += OnVariablesListChanged;
+
+        // 启动状态刷新定时器 (每 500ms 刷新一次当前保活/避让状态)
+        _statusUpdateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _statusUpdateTimer.Tick += StatusUpdateTimer_Tick;
+        _statusUpdateTimer.Start();
 
         _isInitializing = false;
+        RefreshStatusText();
+    }
+
+    private void InteractionSettingsPage_Unloaded(object sender, RoutedEventArgs e)
+    {
+        _statusUpdateTimer?.Stop();
+        _statusUpdateTimer = null;
+
+        var s = SettingsService.Instance;
+        s.VariableService.VariablesListChanged -= OnVariablesListChanged;
+    }
+
+    private void OnVariablesListChanged()
+    {
+        DispatcherQueue.TryEnqueue(LoadVariablesToComboBox);
+    }
+
+    private void StatusUpdateTimer_Tick(object? sender, object e)
+    {
+        RefreshStatusText();
+    }
+
+    private void RefreshStatusText()
+    {
+        var s = SettingsService.Instance;
+        if (!s.PersistentTextService.IsEnabled)
+        {
+            PersistentStatusTextBlock.Text = "常驻未开启";
+            PersistentStatusTextBlock.Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+            return;
+        }
+
+        if (s.PersistentTextService.IsInAvoidance(out string reason, out _))
+        {
+            PersistentStatusTextBlock.Text = reason;
+            PersistentStatusTextBlock.Foreground = new SolidColorBrush(Colors.Orange);
+        }
+        else
+        {
+            PersistentStatusTextBlock.Text = "常驻保活中";
+            PersistentStatusTextBlock.Foreground = new SolidColorBrush(Colors.SeaGreen);
+        }
+    }
+
+    private void LoadVariablesToComboBox()
+    {
+        var s = SettingsService.Instance;
+        var vars = s.VariableService.GetAllVariables();
+
+        VariableComboBox.Items.Clear();
+        foreach (var v in vars)
+        {
+            string typeTag = v.IsBuiltin ? "(内置)" : "(外部)";
+            string label = $"{{{v.Name}}}  -  {v.DisplayName} {typeTag}";
+            var item = new ComboBoxItem
+            {
+                Content = label,
+                Tag = $"{{{v.Name}}}"
+            };
+            VariableComboBox.Items.Add(item);
+        }
+    }
+
+    private void VariableComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        if (VariableComboBox.SelectedItem is ComboBoxItem item && item.Tag is string varTag)
+        {
+            InsertTextAtCursor(varTag);
+            // 重置选中状态，以便下次重复点击选择
+            VariableComboBox.SelectedIndex = -1;
+        }
+    }
+
+    private void RefreshVariablesButton_Click(object sender, RoutedEventArgs e)
+    {
+        LoadVariablesToComboBox();
+    }
+
+    private void InsertTextAtCursor(string textToInsert)
+    {
+        int selStart = PersistentTextBox.SelectionStart;
+        string current = PersistentTextBox.Text ?? string.Empty;
+
+        if (selStart < 0 || selStart > current.Length)
+        {
+            selStart = current.Length;
+        }
+
+        string updated = current.Insert(selStart, textToInsert);
+        if (updated.Length > 144)
+        {
+            updated = updated.Substring(0, 144);
+        }
+
+        PersistentTextBox.Text = updated;
+        int newPos = Math.Min(selStart + textToInsert.Length, updated.Length);
+        PersistentTextBox.Focus(FocusState.Programmatic);
+        PersistentTextBox.Select(newPos, 0);
+        UpdateCharCount();
     }
 
     private void DirectSendSwitch_Toggled(object sender, RoutedEventArgs e)
@@ -79,18 +195,46 @@ public sealed partial class InteractionSettingsPage : Page
         bool isOn = PersistentTextSwitch.IsOn;
         SettingsService.Instance.IsPersistentTextEnabled = isOn;
         PersistentTextBox.IsEnabled = isOn;
+
+        if (isOn)
+        {
+            SettingsService.Instance.PersistentTextService.RestartLoop(
+                SettingsService.Instance.VariableService,
+                SettingsService.Instance.OscService);
+        }
+        else
+        {
+            SettingsService.Instance.PersistentTextService.StopLoop();
+        }
+
+        RefreshStatusText();
     }
 
     private void PersistentTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_isInitializing) return;
-        UpdatePersistentCharCount();
+        UpdateCharCount();
         SettingsService.Instance.PersistentCustomText = PersistentTextBox.Text;
     }
 
-    private void UpdatePersistentCharCount()
+    private void InGameAvoidanceCheckBox_Changed(object sender, RoutedEventArgs e)
     {
-        int len = PersistentTextBox.Text.Length;
+        if (_isInitializing) return;
+        SettingsService.Instance.InGameAvoidanceEnabled = InGameAvoidanceCheckBox.IsChecked ?? true;
+    }
+
+    private void AvoidanceSecondsNumberBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_isInitializing) return;
+        if (!double.IsNaN(sender.Value))
+        {
+            SettingsService.Instance.InGameAvoidanceSeconds = (int)Math.Clamp(sender.Value, 3, 60);
+        }
+    }
+
+    private void UpdateCharCount()
+    {
+        int len = PersistentTextBox.Text?.Length ?? 0;
         PersistentCharCountTextBlock.Text = $"{len} / 144 字符";
         if (len > 144)
         {
@@ -113,15 +257,8 @@ public sealed partial class InteractionSettingsPage : Page
             s.IsPersistentTextEnabled = true;
         }
 
-        await s.PersistentTextService.SubmitAsync(text, s.OscService, s);
-        PersistentStatusTextBlock.Text = "已提交至 VRChat";
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-        timer.Tick += (ts, te) =>
-        {
-            timer.Stop();
-            PersistentStatusTextBlock.Text = string.Empty;
-        };
-        timer.Start();
+        await s.PersistentTextService.SubmitAsync(text, s.VariableService, s.OscService, s);
+        RefreshStatusText();
     }
 
     private async void ClearPersistentTextButton_Click(object sender, RoutedEventArgs e)
@@ -130,13 +267,7 @@ public sealed partial class InteractionSettingsPage : Page
         var s = SettingsService.Instance;
         s.PersistentCustomText = string.Empty;
         await s.PersistentTextService.ClearAsync(s.OscService);
-        PersistentStatusTextBlock.Text = "已清空";
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-        timer.Tick += (ts, te) =>
-        {
-            timer.Stop();
-            PersistentStatusTextBlock.Text = string.Empty;
-        };
-        timer.Start();
+        UpdateCharCount();
+        RefreshStatusText();
     }
 }

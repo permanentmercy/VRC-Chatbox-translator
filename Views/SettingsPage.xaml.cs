@@ -47,7 +47,6 @@ public sealed partial class SettingsPage : Page
         TranslationSwitch.IsOn = s.IsTranslationEnabled;
         ShowTranslatedTextSwitch.IsOn = s.ShowTranslatedText;
         ShowLatencySwitch.IsOn = s.ShowTranslationLatency;
-        AutoFillInputSwitch.IsOn = s.IsAutoFillEnabled;
         OllamaEndpointTextBox.Text = s.OllamaEndpoint;
 
         InitTargetLanguage(s.TargetLanguage);
@@ -302,12 +301,6 @@ public sealed partial class SettingsPage : Page
         if (_isInitializing) return;
         SettingsService.Instance.ShowTranslationLatency = ShowLatencySwitch.IsOn;
         SettingsService.Instance.NotifyDisplaySettingsChanged();
-    }
-
-    private void AutoFillInputSwitch_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_isInitializing) return;
-        SettingsService.Instance.IsAutoFillEnabled = AutoFillInputSwitch.IsOn;
     }
 
     private void InitSubtitleQueueCapacity(int capacity)
@@ -594,7 +587,6 @@ public sealed partial class SettingsPage : Page
         TranslationSwitch.IsOn = s.IsTranslationEnabled;
         ShowTranslatedTextSwitch.IsOn = s.ShowTranslatedText;
         ShowLatencySwitch.IsOn = s.ShowTranslationLatency;
-        AutoFillInputSwitch.IsOn = s.IsAutoFillEnabled;
         InitSubtitleQueueCapacity(s.SubtitleQueueCapacity);
         OllamaEndpointTextBox.Text = s.OllamaEndpoint;
         InitTargetLanguage(s.TargetLanguage);

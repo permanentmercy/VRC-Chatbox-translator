@@ -84,10 +84,17 @@
                         </Grid>
 
                         <Border Background="{ThemeResource LayerFillColorDefaultBrush}" CornerRadius="6" Padding="12,10">
-                            <StackPanel Spacing="4">
-                                <TextBlock Text="快速调用示例 (HTTP GET / POST):" FontWeight="SemiBold" Style="{StaticResource CaptionTextBlockStyle}" />
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="外部 HTTP API 调用接口示例 (支持 GET / POST):" FontWeight="SemiBold" Style="{StaticResource CaptionTextBlockStyle}" />
+                                <TextBlock Text="1. 动态变量注册与赋值 (用于头顶模板拼接):" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="curl &quot;http://127.0.0.1:9002/api/variables/set?name=music&amp;value=周杰伦-晴天&quot;" FontFamily="Consolas" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="2. 获取所有已注册变量与当前值:" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="curl &quot;http://127.0.0.1:9002/api/variables&quot;" FontFamily="Consolas" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="3. 主动触发常驻避让 (避让12秒):" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="curl -X POST &quot;http://127.0.0.1:9002/api/chatbox/avoid?seconds=12&quot;" FontFamily="Consolas" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="4. 直接发送普通单条消息:" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Text="curl &quot;http://127.0.0.1:9002/send?text=你好VRChat&quot;" FontFamily="Consolas" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                                <TextBlock x:Name="InboundStatusTextBlock" Text="就绪" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock x:Name="InboundStatusTextBlock" Text="就绪" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,4,0,0" />
                             </StackPanel>
                         </Border>
                     </StackPanel>

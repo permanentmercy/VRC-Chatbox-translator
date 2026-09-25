@@ -64,7 +64,7 @@
                     </StackPanel>
                 </Border>
 
-                <!-- 头顶常驻自定义文本 -->
+                <!-- 头顶常驻与动态模板文本 -->
                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                         BorderThickness="1" CornerRadius="8" Padding="18">
@@ -74,33 +74,72 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="头顶常驻自定义文本" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" VerticalAlignment="Center" />
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="头顶常驻与动态模板" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                                <TextBlock Text="在文本中通过 {变量名} 引用动态内容。识别、翻译或外部程序通过 API 赋值后，自动刷新上屏至游戏头顶。"
+                                           Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                            </StackPanel>
                             <ToggleSwitch x:Name="PersistentTextSwitch" Grid.Column="1" VerticalAlignment="Center"
                                           Toggled="PersistentTextSwitch_Toggled" OnContent="开启" OffContent="关闭" />
                         </Grid>
 
+                        <!-- 下拉式变量列表工具栏 -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <TextBlock Text="插入变量:" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <ComboBox x:Name="VariableComboBox" Width="280"
+                                          PlaceholderText="点击选择变量插入输入框..."
+                                          SelectionChanged="VariableComboBox_SelectionChanged" />
+                                <Button x:Name="RefreshVariablesButton" ToolTipService.ToolTip="刷新可用变量列表"
+                                        Click="RefreshVariablesButton_Click" Padding="6,4">
+                                    <FontIcon Glyph="&#xE72C;" FontSize="12" />
+                                </Button>
+                            </StackPanel>
+                            <TextBlock x:Name="PersistentCharCountTextBlock" Grid.Column="1" HorizontalAlignment="Right" Text="0 / 144 字符"
+                                       FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                        </Grid>
+
                         <TextBox x:Name="PersistentTextBox"
-                                 PlaceholderText="输入要在头顶常驻显示的文本 (如: 挂机中 / AFK / 欢迎找我聊天...)"
+                                 PlaceholderText="输入要在头顶常驻或发送的模板文本 (例: AFK | 正在听: {music} | 翻译: {translation})"
                                  TextWrapping="Wrap"
                                  AcceptsReturn="True"
                                  MaxLength="144"
-                                 MinHeight="68"
+                                 MinHeight="72"
                                  TextChanged="PersistentTextBox_TextChanged" />
 
+                        <!-- 游戏内打字避让守卫设置与操作栏 -->
                         <Grid>
-                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                                <TextBlock x:Name="PersistentCharCountTextBlock" Text="0 / 144 字符"
-                                           FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                                <CheckBox x:Name="InGameAvoidanceCheckBox" Content="游戏内输入自动避让"
+                                          IsChecked="True" Checked="InGameAvoidanceCheckBox_Changed" Unchecked="InGameAvoidanceCheckBox_Changed"
+                                          ToolTipService.ToolTip="检测到玩家在 VRChat 游戏内打字或按回车发消息时，常驻文本自动暂停让位，避免覆盖游戏内聊天" />
+                                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                    <TextBlock Text="避让时长:" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                    <NumberBox x:Name="AvoidanceSecondsNumberBox" Value="12" Minimum="3" Maximum="60" SpinButtonPlacementMode="Compact"
+                                               Width="85" ValueChanged="AvoidanceSecondsNumberBox_ValueChanged" ToolTipService.ToolTip="游戏内发消息后常驻文本暂停的秒数 (默认 12 秒)" />
+                                    <TextBlock Text="秒" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                </StackPanel>
                                 <TextBlock x:Name="PersistentStatusTextBlock" Text=""
-                                           FontSize="12" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                                           FontSize="12" VerticalAlignment="Center" />
                             </StackPanel>
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" VerticalAlignment="Center">
                                 <Button x:Name="ApplyPersistentTextButton" Content="提交"
                                         Click="ApplyPersistentTextButton_Click" />
                                 <Button x:Name="ClearPersistentTextButton" Content="清空"
                                         Click="ClearPersistentTextButton_Click" />
                             </StackPanel>
                         </Grid>
+
                     </StackPanel>
                 </Border>
 

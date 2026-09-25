@@ -48,6 +48,8 @@ public class AppConfig
     public bool IsClearOnSendEnabled { get; set; } = true;
     public bool IsPersistentTextEnabled { get; set; } = false;
     public string PersistentCustomText { get; set; } = string.Empty;
+    public bool InGameAvoidanceEnabled { get; set; } = true;
+    public int InGameAvoidanceSeconds { get; set; } = 12;
 
     // ==========================================
     // 快捷热键配置

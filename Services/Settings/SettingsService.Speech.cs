@@ -48,6 +48,7 @@ public partial class SettingsService
             }
         }
         UpdateCombinedSubtitles();
+        VariableService.SetVariable("speech", text);
 
         if (IsTranslationEnabled)
         {
@@ -60,40 +61,23 @@ public partial class SettingsService
                 SpeechStatusUpdated?.Invoke($"翻译完成 ({result.LatencyMs}ms)");
 
                 // 更新队列中该句对应的翻译内容与延迟
+                string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
                 lock (_subtitleEntries)
                 {
                     int idx = _subtitleEntries.FindLastIndex(e => e.Original == text);
                     if (idx >= 0)
                     {
-                        string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
                         _subtitleEntries[idx] = new SubtitleEntry(text, cleanTrans, result.LatencyMs);
                     }
                 }
                 UpdateCombinedSubtitles();
-
-                // 若开启自动发送，识别/翻译完成后直接发送到 VRChat（无打字动画，不污染程序输入框）
-                if (IsAutoFillEnabled && !string.IsNullOrWhiteSpace(result.Text))
-                {
-                    _ = FinalizeSendAsync(result.Text);
-                }
+                VariableService.SetVariable("translation", cleanTrans);
             }
             catch (Exception ex)
             {
                 string err = $"翻译失败: {ex.Message}";
                 AddLog("Translate", err, false);
                 SpeechStatusUpdated?.Invoke(err);
-                if (IsAutoFillEnabled && !string.IsNullOrWhiteSpace(text))
-                {
-                    _ = FinalizeSendAsync(text);
-                }
-            }
-        }
-        else
-        {
-            // 若开启自动发送，识别完成后直接发送到 VRChat（无打字动画，不污染程序输入框）
-            if (IsAutoFillEnabled && !string.IsNullOrWhiteSpace(text))
-            {
-                _ = FinalizeSendAsync(text);
             }
         }
     }

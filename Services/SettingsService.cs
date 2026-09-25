@@ -30,6 +30,8 @@ public partial class SettingsService
     public OllamaService OllamaService { get; } = new();
     public InboundService InboundService { get; } = new();
     public PersistentTextService PersistentTextService { get; } = new();
+    public VariableService VariableService { get; } = new();
+    public VrcInGameGuard VrcInGameGuard { get; } = new();
     public ObservableCollection<LogEntryViewModel> Logs { get; } = new();
 
     public AppConfig Config { get; private set; } = new();
@@ -311,6 +313,35 @@ public partial class SettingsService
         }
     }
 
+    public bool InGameAvoidanceEnabled
+    {
+        get => Config.InGameAvoidanceEnabled;
+        set
+        {
+            if (Config.InGameAvoidanceEnabled != value)
+            {
+                Config.InGameAvoidanceEnabled = value;
+                PersistentTextService.EnableInGameAvoidance = value;
+                VrcInGameGuard.IsEnabled = value;
+                SaveConfigDebounced();
+            }
+        }
+    }
+
+    public int InGameAvoidanceSeconds
+    {
+        get => Config.InGameAvoidanceSeconds;
+        set
+        {
+            if (Config.InGameAvoidanceSeconds != value)
+            {
+                Config.InGameAvoidanceSeconds = value;
+                PersistentTextService.AvoidanceSeconds = value;
+                SaveConfigDebounced();
+            }
+        }
+    }
+
     public bool IsHotkeyEnabled
     {
         get => Config.IsHotkeyEnabled;
@@ -504,6 +535,27 @@ public partial class SettingsService
         LoadConfig();
 
         OscService.MessageSent += OnMessageSent;
+
+        InboundService.VariableService = VariableService;
+        InboundService.PersistentTextService = PersistentTextService;
+
+        VariableService.VariableUpdated += (varName, val) =>
+        {
+            _ = PersistentTextService.OnVariableUpdatedAsync(varName, VariableService, OscService);
+        };
+
+        VrcInGameGuard.InGameMessageSent += () =>
+        {
+            PersistentTextService.NotifyInGameMessageSent();
+        };
+        VrcInGameGuard.InGameTyping += () =>
+        {
+            PersistentTextService.NotifyInGameTyping();
+        };
+        VrcInGameGuard.IsEnabled = Config.InGameAvoidanceEnabled;
+        PersistentTextService.EnableInGameAvoidance = Config.InGameAvoidanceEnabled;
+        PersistentTextService.AvoidanceSeconds = Config.InGameAvoidanceSeconds;
+        VrcInGameGuard.Start();
 
         InboundService.MessageReceived += (text, source) =>
         {
@@ -713,7 +765,7 @@ public partial class SettingsService
         PersistentTextService.CustomText = Config.PersistentCustomText;
         if (Config.IsPersistentTextEnabled && !string.IsNullOrWhiteSpace(Config.PersistentCustomText))
         {
-            PersistentTextService.RestartLoop(OscService);
+            PersistentTextService.RestartLoop(VariableService, OscService);
         }
     }
 

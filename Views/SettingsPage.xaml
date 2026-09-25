@@ -84,9 +84,6 @@
                                           Toggled="ShowLatencySwitch_Toggled"
                                           ToolTipService.ToolTip="在上方卡片的翻译结果旁显示请求消耗的毫秒数" />
 
-                            <ToggleSwitch x:Name="AutoFillInputSwitch" Grid.Row="3" Grid.Column="1" Header="识别/翻译直接发送到 VRChat"
-                                          Toggled="AutoFillInputSwitch_Toggled"
-                                          ToolTipService.ToolTip="语音识别或 AI 翻译定稿后直接发送至 VRChat 头顶气泡（无打字动画），不再填入本软件输入框" />
 
                             <ComboBox x:Name="SubtitleQueueComboBox" Grid.Row="4" Header="字幕历史保留句数"
                                       HorizontalAlignment="Stretch"

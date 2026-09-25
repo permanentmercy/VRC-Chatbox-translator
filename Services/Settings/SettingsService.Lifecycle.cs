@@ -64,6 +64,7 @@ public partial class SettingsService
                 try { LiveCaptionsService.Dispose(); } catch { }
                 try { InboundService.Dispose(); } catch { }
                 try { HotkeyService.Dispose(); } catch { }
+                try { VrcInGameGuard.Dispose(); } catch { }
             });
             await Task.WhenAny(cleanupTask, Task.Delay(500));
         }

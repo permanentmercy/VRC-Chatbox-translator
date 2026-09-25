@@ -31,7 +31,6 @@ public sealed partial class TranslationSettingsPage : Page
         ShowRecognizedTextSwitch.IsOn = s.ShowRecognizedText;
         ShowTranslatedTextSwitch.IsOn = s.ShowTranslatedText;
         ShowLatencySwitch.IsOn = s.ShowTranslationLatency;
-        AutoFillInputSwitch.IsOn = s.IsAutoFillEnabled;
 
         _isInitializing = false;
 
@@ -162,11 +161,5 @@ public sealed partial class TranslationSettingsPage : Page
         if (_isInitializing) return;
         SettingsService.Instance.ShowTranslationLatency = ShowLatencySwitch.IsOn;
         SettingsService.Instance.NotifyDisplaySettingsChanged();
-    }
-
-    private void AutoFillInputSwitch_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_isInitializing) return;
-        SettingsService.Instance.IsAutoFillEnabled = AutoFillInputSwitch.IsOn;
     }
 }
