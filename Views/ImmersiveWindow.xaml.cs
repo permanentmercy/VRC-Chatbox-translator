@@ -275,6 +275,7 @@ public sealed partial class ImmersiveWindow : Window
             SettingsService.Instance.HotkeyService.ActivateWindow(_hWnd);
             MessageInputBox.Focus(FocusState.Programmatic);
             MessageInputBox.Select(MessageInputBox.Text.Length, 0);
+            SettingsService.Instance.HotkeyService.EnsureImeActive(_hWnd);
         });
     }
 

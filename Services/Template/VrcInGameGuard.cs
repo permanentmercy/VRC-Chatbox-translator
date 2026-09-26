@@ -54,6 +54,7 @@ public class VrcInGameGuard : IDisposable
     private uint _lastForegroundPid = 0;
     private bool _lastIsVrc = false;
     private DateTime _lastCheckTime = DateTime.MinValue;
+    private DateTime _lastVrcForegroundTime = DateTime.MinValue;
 
     /// <summary>
     /// 当玩家在 VRChat 游戏窗口内按回车发送消息时触发
@@ -129,7 +130,7 @@ public class VrcInGameGuard : IDisposable
         GetWindowThreadProcessId(hwnd, out uint pid);
         if (pid == 0) return false;
 
-        if (pid == _lastForegroundPid && (now - _lastCheckTime).TotalMilliseconds < 500)
+        if (pid == _lastForegroundPid && (now - _lastCheckTime).TotalMilliseconds < 400)
         {
             return _lastIsVrc;
         }
@@ -140,7 +141,26 @@ public class VrcInGameGuard : IDisposable
         try
         {
             using var proc = Process.GetProcessById((int)pid);
-            _lastIsVrc = proc.ProcessName.Contains("VRChat", StringComparison.OrdinalIgnoreCase);
+            string procName = proc.ProcessName;
+            bool isDirectVrc = procName.Contains("VRChat", StringComparison.OrdinalIgnoreCase);
+            if (isDirectVrc)
+            {
+                _lastVrcForegroundTime = now;
+                _lastIsVrc = true;
+                return true;
+            }
+
+            // 核心兼容：如果前台窗口是 Windows 输入法/候选框宿主 (如 TextInputHost, ctfmon 等)，
+            // 且最近 3 秒内前台是 VRChat，则仍视作在 VRChat 中使用输入法打字，绝不提前中断打字避让状态
+            if ((now - _lastVrcForegroundTime).TotalSeconds < 3.0 &&
+                (procName.Contains("TextInputHost", StringComparison.OrdinalIgnoreCase) ||
+                 procName.Contains("ctfmon", StringComparison.OrdinalIgnoreCase)))
+            {
+                _lastIsVrc = true;
+                return true;
+            }
+
+            _lastIsVrc = false;
         }
         catch
         {
@@ -154,26 +174,26 @@ public class VrcInGameGuard : IDisposable
     {
         var now = DateTime.UtcNow;
 
-        // 1. Esc 键: 取消并关闭聊天框，立即退出打字状态，不触发避让
+        // 1. Esc 键: 取消并关闭聊天框，立即退出打字状态
         if (vkCode == VK_ESCAPE)
         {
             _isChatboxOpen = false;
             return;
         }
 
-        // 2. 回车键: 仅当聊天框处于打开打字状态时，按回车才算“发送了聊天消息”
+        // 2. 回车键 (VK_RETURN):
+        // 只要在 VRChat 前台按回车，均视为发送聊天框消息或确认输入，必须立即触发消息发送避让！
+        // 彻底解决通过鼠标点击呼出聊天框、或输入法候选转换期间状态被重置导致回车避让失效的硬伤
         if (vkCode == VK_RETURN)
         {
-            if (_isChatboxOpen)
-            {
-                _isChatboxOpen = false;
-                InGameMessageSent?.Invoke();
-            }
+            _isChatboxOpen = false;
+            InGameMessageSent?.Invoke();
             return;
         }
 
-        // 3. Y 键 (VRChat 默认聊天框呼出键) 或 IME 输入法按键 (拼音/输入法模式)
-        if (vkCode == VK_Y || vkCode == VK_PROCESSKEY)
+        // 3. Y 键 (VRChat 默认聊天框呼出键)、IME 输入法按键 (拼音/输入法模式) 或 退格键 (VK_BACK)
+        // 在普通移动中玩家绝不会按退格键，一旦按退格必定是在编辑聊天框文字
+        if (vkCode == VK_Y || vkCode == VK_PROCESSKEY || vkCode == VK_BACK)
         {
             _isChatboxOpen = true;
             _lastChatboxActivity = now;

@@ -108,6 +108,7 @@
 
                 <!-- 消息输入框 -->
                 <TextBox x:Name="MessageInputBox"
+                         InputScope="Chat"
                          Grid.Column="0"
                          HorizontalAlignment="Stretch"
                          VerticalAlignment="Stretch"

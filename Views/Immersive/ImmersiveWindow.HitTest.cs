@@ -33,7 +33,15 @@ public sealed partial class ImmersiveWindow : Window
                 int x2 = (int)Math.Ceiling((_inputCardBounds.X + _inputCardBounds.Width) * scale) + 2;
                 int y2 = (int)Math.Ceiling((_inputCardBounds.Y + _inputCardBounds.Height) * scale) + 2;
                 int radius = (int)Math.Round(10 * scale);
-                inputRgn = CreateRoundRectRgn(x1, y1, x2, y2, radius * 2, radius * 2);
+
+                // 预留卡片下方输入法候选窗口 (IME Candidate Window) 显示空间，防止中文候选框被 SetWindowRgn 强制裁切屏蔽
+                int imeCandidateHeight = (int)Math.Ceiling(140 * scale);
+                IntPtr cardRgn = CreateRoundRectRgn(x1, y1, x2, y2, radius * 2, radius * 2);
+                IntPtr imeRgn = CreateRectRgn(x1, y2 - 2, x2, y2 + imeCandidateHeight);
+                inputRgn = CreateRectRgn(0, 0, 0, 0);
+                CombineRgn(inputRgn, cardRgn, imeRgn, RGN_OR);
+                DeleteObject(cardRgn);
+                DeleteObject(imeRgn);
             }
             else
             {

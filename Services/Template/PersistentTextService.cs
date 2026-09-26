@@ -246,11 +246,11 @@ public class PersistentTextService : IDisposable
                     return true;
                 }
 
-                // 3. 游戏内正在打字 (停止击键 3 秒后恢复)
+                // 3. 游戏内正在打字 (停止击键 5 秒后恢复，给予充分的思考与选词时间)
                 double elapsedSinceInGameType = (now - _lastInGameTypingTime).TotalSeconds;
-                if (elapsedSinceInGameType < 3.0)
+                if (elapsedSinceInGameType < 5.0)
                 {
-                    remainingSeconds = (int)Math.Ceiling(3.0 - elapsedSinceInGameType);
+                    remainingSeconds = (int)Math.Ceiling(5.0 - elapsedSinceInGameType);
                     reason = "检测到游戏内正在输入文字...";
                     return true;
                 }

@@ -406,6 +406,11 @@ public partial class LiveCaptionsService : IDisposable
         }
     }
 
+    private static readonly HashSet<string> EnglishAbbreviations = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.", "e.g.", "i.e.", "st.", "inc.", "ltd.", "co.", "corp.", "approx.", "dept.", "est.", "fig.", "jan.", "feb.", "mar.", "apr.", "jun.", "jul.", "aug.", "sep.", "sept.", "oct.", "nov.", "dec.", "a.m.", "p.m.", "am.", "pm.", "u.s.", "u.k.", "e.u."
+    };
+
     private string ExtractNewText(string fullText)
     {
         if (string.IsNullOrWhiteSpace(fullText)) return string.Empty;
@@ -417,17 +422,18 @@ public partial class LiveCaptionsService : IDisposable
                 string sent = _recentCommittedSentences[i];
                 if (string.IsNullOrWhiteSpace(sent)) continue;
 
-                int idx = fullText.LastIndexOf(sent, StringComparison.Ordinal);
+                // 1. 忽略大小写查找（解决英文实时字幕 ASR 动态调整首字母大小写的匹配丢失问题）
+                int idx = fullText.LastIndexOf(sent, StringComparison.OrdinalIgnoreCase);
                 if (idx >= 0)
                 {
                     return fullText.Substring(idx + sent.Length);
                 }
 
-                // 备用标点容差匹配
+                // 2. 备用标点与空格容差匹配（不区分大小写）
                 string fuzzySent = TrimTrailingPunctuation(sent);
                 if (fuzzySent.Length >= 2)
                 {
-                    int fIdx = fullText.LastIndexOf(fuzzySent, StringComparison.Ordinal);
+                    int fIdx = fullText.LastIndexOf(fuzzySent, StringComparison.OrdinalIgnoreCase);
                     if (fIdx >= 0)
                     {
                         int cutStart = fIdx + fuzzySent.Length;
@@ -446,10 +452,54 @@ public partial class LiveCaptionsService : IDisposable
             return fullText;
         }
 
-        int lastIdx = fullText.LastIndexOf(_lastCommittedSentence, StringComparison.Ordinal);
+        int lastIdx = fullText.LastIndexOf(_lastCommittedSentence, StringComparison.OrdinalIgnoreCase);
         if (lastIdx >= 0)
         {
             return fullText.Substring(lastIdx + _lastCommittedSentence.Length);
+        }
+
+        // 3. 词级后置锚定与防重复保护（当英文 ASR 回溯修改了已提交句子的中间词或标点时）：
+        // 绝不盲目返回整段 fullText 重复切句与提交，而是寻找最近已提交句子的末尾词向后定位
+        string safeFallback = FindRemainingTextByAnchor(fullText);
+        return safeFallback;
+    }
+
+    private string FindRemainingTextByAnchor(string fullText)
+    {
+        lock (_recentCommittedSentences)
+        {
+            for (int i = _recentCommittedSentences.Count - 1; i >= 0; i--)
+            {
+                string sent = _recentCommittedSentences[i];
+                if (string.IsNullOrWhiteSpace(sent)) continue;
+
+                // 尝试提取该句的最后 2~3 个词作为锚点
+                var words = sent.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (words.Length >= 2)
+                {
+                    string anchor = words[^2] + " " + words[^1];
+                    anchor = TrimTrailingPunctuation(anchor);
+                    if (anchor.Length >= 4)
+                    {
+                        int aIdx = fullText.LastIndexOf(anchor, StringComparison.OrdinalIgnoreCase);
+                        if (aIdx >= 0)
+                        {
+                            int cutStart = aIdx + anchor.Length;
+                            while (cutStart < fullText.Length && IsDelimiterOrPunctuation(fullText[cutStart]))
+                            {
+                                cutStart++;
+                            }
+                            return fullText.Substring(cutStart);
+                        }
+                    }
+                }
+            }
+
+            // 若已有提交历史且全文长度未明显增长，绝不重复返回整段文本引起刷屏
+            if (_recentCommittedSentences.Count > 0)
+            {
+                return string.Empty;
+            }
         }
 
         return fullText;
@@ -478,47 +528,92 @@ public partial class LiveCaptionsService : IDisposable
         return false;
     }
 
+    private static bool ContainsCjk(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        foreach (char c in text)
+        {
+            if (c >= 0x4E00 && c <= 0x9FFF) return true;
+            if (c >= 0x3400 && c <= 0x4DBF) return true;
+            if (c >= 0x3040 && c <= 0x30FF) return true;
+            if (c >= 0xAC00 && c <= 0xD7AF) return true;
+        }
+        return false;
+    }
+
     private static int FindSentenceBoundary(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return -1;
+        bool hasCjk = ContainsCjk(text);
 
         for (int i = 0; i < text.Length; i++)
         {
             char c = text[i];
             if (IsTerminalDelimiter(c))
             {
-                // 1. 浮点数/小数点保护：如 3.14，不作为断句符
+                // 1. 浮点数/版本号/小数点保护：如 3.14, 1.0, 不作为断句符
                 if (c == '.' && i > 0 && i + 1 < text.Length && char.IsDigit(text[i - 1]) && char.IsDigit(text[i + 1]))
                 {
                     continue;
                 }
 
-                // 2. 常见单字母缩写保护：如 A. 或 e.g.，后接小写字母时不切断
-                if (c == '.' && i > 0 && char.IsLetter(text[i - 1]))
+                // 2. 西文环境下句号必须后接空白字符、引号、括号或处于文本末尾，防止诸如 github.com, v1.0.0, node.js 误断句
+                if (c == '.' && !hasCjk)
                 {
-                    if (i + 2 < text.Length && text[i + 1] == ' ' && char.IsLower(text[i + 2]))
+                    bool isAtEnd = (i + 1 == text.Length);
+                    bool followedBySpaceOrQuote = !isAtEnd && (char.IsWhiteSpace(text[i + 1]) ||
+                                                              text[i + 1] == '"' || text[i + 1] == '\'' ||
+                                                              text[i + 1] == '”' || text[i + 1] == '’' ||
+                                                              text[i + 1] == ')' || text[i + 1] == ']');
+                    if (!isAtEnd && !followedBySpaceOrQuote)
+                    {
+                        continue;
+                    }
+
+                    // 3. 常见英语缩写词保护：提取该句号结尾的词，如 Mr., Dr., etc., vs., e.g.
+                    int wordStart = i - 1;
+                    while (wordStart > 0 && !char.IsWhiteSpace(text[wordStart - 1]) && text[wordStart - 1] != '(' && text[wordStart - 1] != '[')
+                    {
+                        wordStart--;
+                    }
+                    string token = text.Substring(wordStart, i - wordStart + 1).Trim();
+                    if (EnglishAbbreviations.Contains(token))
+                    {
+                        continue;
+                    }
+
+                    // 4. 单个大写字母缩写保护：如 A. 或 John F. Kennedy
+                    if (token.Length == 2 && char.IsUpper(token[0]))
                     {
                         continue;
                     }
                 }
 
-                // 3. 最小有效长度保护：终结符前必须至少有 3 个有效字符，防止碎词过早断句
+                // 5. 最小有效长度保护：终结符前必须至少有 2 个有效字符（中文 2 字，英文 3 字母）
                 string prefix = text.Substring(0, i);
-                if (GetMeaningfulContentLength(prefix) < 3)
+                int minChars = hasCjk ? 2 : 3;
+                if (GetMeaningfulContentLength(prefix) < minChars)
                 {
                     continue;
                 }
 
                 int endIdx = i;
-                while (endIdx + 1 < text.Length && (IsTerminalDelimiter(text[endIdx + 1]) || IsCommaDelimiter(text[endIdx + 1])))
+                while (endIdx + 1 < text.Length && (IsTerminalDelimiter(text[endIdx + 1]) ||
+                                                    IsCommaDelimiter(text[endIdx + 1]) ||
+                                                    text[endIdx + 1] == '"' || text[endIdx + 1] == '\'' ||
+                                                    text[endIdx + 1] == '”' || text[endIdx + 1] == '’' ||
+                                                    text[endIdx + 1] == ')' || text[endIdx + 1] == ']'))
                 {
                     endIdx++;
                 }
                 return endIdx;
             }
 
-            // 4. 超长句逗号兜底保护：只有当单句长度超过 40 个字符且遇到逗号时，才适度拆分
-            if (IsCommaDelimiter(c) && i >= 40)
+            // 6. 超长句逗号兜底保护：
+            // 中文单句达到 40 个字符遇逗号可切分；
+            // 英文单句 40 字符仅约 6-8 个词（绝不能在逗号切断，否则会导致半句碎片和翻译混乱），仅在超长段落 (>=110 字符) 且遇逗号时才兜底切分
+            int commaThreshold = hasCjk ? 40 : 110;
+            if (IsCommaDelimiter(c) && i >= commaThreshold)
             {
                 int endIdx = i;
                 while (endIdx + 1 < text.Length && (IsCommaDelimiter(text[endIdx + 1]) || IsTerminalDelimiter(text[endIdx + 1])))
@@ -572,8 +667,8 @@ public partial class LiveCaptionsService : IDisposable
         text = text.Replace("\r\n", "\n").Replace('\r', '\n');
 
         // 过滤从字幕中读取到的所有换行符：
-        // 1. 若换行符两侧均为西文字符/数字，插入单个空格防止英文单词粘连
-        // 2. 其余情况（如中文字符、标点前后）直接剔除换行符，保持语句完整连贯，杜绝突兀换行
+        // 1. 若换行符两侧存在西文字符、数字或西文标点，且任一侧不是空格，则替换为单个空格，防止西文单词或标点后粘连（如 "world.\nToday" -> "world. Today"）
+        // 2. 纯中文字符之间的换行符直接剔除，保持中文连贯
         var sb = new StringBuilder(text.Length);
         for (int i = 0; i < text.Length; i++)
         {
@@ -583,7 +678,10 @@ public partial class LiveCaptionsService : IDisposable
                 char prev = (i > 0) ? text[i - 1] : '\0';
                 char next = (i + 1 < text.Length) ? text[i + 1] : '\0';
 
-                if (IsAsciiAlphaNumeric(prev) && IsAsciiAlphaNumeric(next))
+                bool prevIsLatin = IsAsciiAlphaNumeric(prev) || IsEnglishPunctuation(prev);
+                bool nextIsLatin = IsAsciiAlphaNumeric(next) || IsEnglishPunctuation(next);
+
+                if ((prevIsLatin || nextIsLatin) && prev != ' ' && next != ' ')
                 {
                     sb.Append(' ');
                 }
@@ -601,6 +699,11 @@ public partial class LiveCaptionsService : IDisposable
         }
 
         return cleaned;
+    }
+
+    private static bool IsEnglishPunctuation(char c)
+    {
+        return c == '.' || c == ',' || c == '!' || c == '?' || c == ';' || c == ':' || c == '"' || c == '\'' || c == '-' || c == ')';
     }
 
     private static bool IsAsciiAlphaNumeric(char c)

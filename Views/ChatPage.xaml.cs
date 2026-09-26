@@ -205,6 +205,7 @@ public sealed partial class ChatPage : Page
     {
         MessageInputBox.Focus(FocusState.Programmatic);
         MessageInputBox.Select(MessageInputBox.Text.Length, 0);
+        SettingsService.Instance.HotkeyService.EnsureImeActive();
     }
 
     private void MessageInputBox_TextCompositionStarted(TextBox sender, TextCompositionStartedEventArgs args)

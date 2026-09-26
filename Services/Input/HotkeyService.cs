@@ -99,6 +99,16 @@ public partial class HotkeyService : IDisposable
         }
     }
 
+    public void EnsureImeActive(IntPtr? specificHwnd = null)
+    {
+        IntPtr target = specificHwnd ?? _currentHwnd;
+        if (target == IntPtr.Zero) target = _mainWindowHwnd;
+        if (target != IntPtr.Zero)
+        {
+            EnsureImeActive(target);
+        }
+    }
+
     public bool Register(uint modifiers, uint vk)
     {
         return RegisterWake(modifiers, vk);

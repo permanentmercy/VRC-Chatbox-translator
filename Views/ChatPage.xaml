@@ -81,6 +81,7 @@
                 VerticalAlignment="Stretch">
             <Grid>
                 <TextBox x:Name="MessageInputBox"
+                         InputScope="Chat"
                          HorizontalAlignment="Stretch"
                          VerticalAlignment="Stretch"
                          AcceptsReturn="True"

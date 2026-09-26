@@ -111,16 +111,20 @@
                 <StackPanel x:Name="LiveCaptionsPanel" Spacing="14" Visibility="Collapsed">
                     <Grid ColumnSpacing="20" RowSpacing="12">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="320" />
-                            <ColumnDefinition Width="320" />
+                            <ColumnDefinition Width="300" />
+                            <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
-                        <ComboBox x:Name="LiveCaptionsLanguageComboBox" Grid.Column="0" Header="实时字幕识别语言"
+                        <ComboBox x:Name="LiveCaptionsLanguageComboBox" Grid.Row="0" Grid.Column="0" Header="实时字幕识别语言"
                                   Width="300" HorizontalAlignment="Left"
                                   SelectionChanged="LiveCaptionsLanguageComboBox_SelectionChanged"
                                   ToolTipService.ToolTip="直接在程序内切换 Windows 11 实时字幕的识别语言，无需呼出系统字幕窗口" />
 
-                        <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Orientation="Horizontal" Spacing="12" Margin="0,0,0,2">
+                        <StackPanel Grid.Row="0" Grid.Column="1" VerticalAlignment="Bottom" Orientation="Horizontal" Spacing="12" Margin="0,0,0,2">
                             <Button x:Name="ToggleLiveCaptionsButton"
                                     Click="ToggleLiveCaptionsButton_Click"
                                     ToolTipService.ToolTip="在屏幕上唤出或最小化 Windows 11 原生实时字幕窗口">
@@ -129,11 +133,13 @@
                                     <TextBlock Text="呼出 / 隐藏系统字幕窗口" />
                                 </StackPanel>
                             </Button>
-                            <CheckBox x:Name="LiveCaptionsHideNativeCheckBox" Content="自动隐藏caption"
-                                      IsChecked="True" Checked="LiveCaptionsHideNativeCheckBox_CheckChanged"
-                                      Unchecked="LiveCaptionsHideNativeCheckBox_CheckChanged"
-                                      ToolTipService.ToolTip="勾选后，开启时自动将系统自带的黑底字幕窗口最小化，避免遮挡视线" />
                         </StackPanel>
+
+                        <CheckBox x:Name="LiveCaptionsHideNativeCheckBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                  Content="自动隐藏系统原生字幕窗口 (开启后最小化黑底窗口，后台静默监听)"
+                                  IsChecked="True" Checked="LiveCaptionsHideNativeCheckBox_CheckChanged"
+                                  Unchecked="LiveCaptionsHideNativeCheckBox_CheckChanged"
+                                  ToolTipService.ToolTip="勾选后，开启时自动将系统自带的黑底字幕窗口最小化，避免遮挡视线" />
                     </Grid>
 
                     <!-- Ear 自动语种检测参数与实时状态面板 -->

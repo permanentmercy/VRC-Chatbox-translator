@@ -117,21 +117,10 @@ public partial class HotkeyService
             }
 
             IntPtr fore = GetForegroundWindow();
-            uint foreThread = GetWindowThreadProcessId(fore, IntPtr.Zero);
-            uint targetThread = GetWindowThreadProcessId(_lastExternalHwnd, IntPtr.Zero);
-
-            if (foreThread != targetThread && foreThread != 0 && targetThread != 0)
-            {
-                AttachThreadInput(foreThread, targetThread, true);
-                SetForegroundWindow(_lastExternalHwnd);
-                BringWindowToTop(_lastExternalHwnd);
-                AttachThreadInput(foreThread, targetThread, false);
-            }
-            else
-            {
-                SetForegroundWindow(_lastExternalHwnd);
-                BringWindowToTop(_lastExternalHwnd);
-            }
+            keybd_event(VK_MENU, 0, 0, 0);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+            SetForegroundWindow(_lastExternalHwnd);
+            BringWindowToTop(_lastExternalHwnd);
             return true;
         }
 
@@ -140,6 +129,88 @@ public partial class HotkeyService
             ShowWindow(_mainWindowHwnd, SW_MINIMIZE);
         }
         return false;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+
+    private const byte VK_MENU = 0x12;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+
+    [DllImport("imm32.dll")]
+    private static extern IntPtr ImmGetContext(IntPtr hWnd);
+
+    [DllImport("imm32.dll")]
+    private static extern bool ImmReleaseContext(IntPtr hWnd, IntPtr hIMC);
+
+    [DllImport("imm32.dll")]
+    private static extern bool ImmSetOpenStatus(IntPtr hIMC, bool fOpen);
+
+    [DllImport("imm32.dll")]
+    private static extern bool ImmSetConversionStatus(IntPtr hIMC, uint fdwConversion, uint fdwSentence);
+
+    [DllImport("imm32.dll")]
+    private static extern bool ImmGetConversionStatus(IntPtr hIMC, out uint lpfdwConversion, out uint lpfdwSentence);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetKeyboardLayout(uint idThread);
+
+    [DllImport("user32.dll")]
+    private static extern int GetKeyboardLayoutList(int nBuff, [Out] IntPtr[] lpList);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr ActivateKeyboardLayout(IntPtr hkl, uint Flags);
+
+    private const uint IME_CMODE_NATIVE = 0x0001;
+    private const uint KLF_ACTIVATE = 0x00000001;
+
+    /// <summary>
+    /// 确保当前窗口的中文输入法处于打开与中文候选模式。
+    /// 彻底解决从游戏切回时线程输入法被锁在纯英文导致只能敲出英文字母、没有候选框的 Windows 底层输入法失联问题。
+    /// </summary>
+    public static void EnsureImeActive(IntPtr hWnd)
+    {
+        try
+        {
+            // 1. 若当前键盘布局为纯英文 (0x0409)，但系统安装了中文输入法 (0x0804)，则优先切至中文输入法布局
+            IntPtr currentHkl = GetKeyboardLayout(0);
+            ushort langId = (ushort)((long)currentHkl & 0xFFFF);
+            if (langId != 0x0804)
+            {
+                int count = GetKeyboardLayoutList(0, Array.Empty<IntPtr>());
+                if (count > 0)
+                {
+                    IntPtr[] list = new IntPtr[count];
+                    GetKeyboardLayoutList(count, list);
+                    foreach (var hkl in list)
+                    {
+                        ushort lId = (ushort)((long)hkl & 0xFFFF);
+                        if (lId == 0x0804)
+                        {
+                            ActivateKeyboardLayout(hkl, KLF_ACTIVATE);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 2. 通过 IMM32 确保输入法打开 (OpenStatus = true, ConversionMode = NATIVE 中文模式)
+            if (hWnd != IntPtr.Zero)
+            {
+                IntPtr hIMC = ImmGetContext(hWnd);
+                if (hIMC != IntPtr.Zero)
+                {
+                    ImmSetOpenStatus(hIMC, true);
+                    if (ImmGetConversionStatus(hIMC, out uint conv, out uint sent))
+                    {
+                        conv |= IME_CMODE_NATIVE;
+                        ImmSetConversionStatus(hIMC, conv, sent);
+                    }
+                    ImmReleaseContext(hWnd, hIMC);
+                }
+            }
+        }
+        catch { }
     }
 
     public void ActivateWindow(IntPtr? specificHwnd = null)
@@ -162,21 +233,16 @@ public partial class HotkeyService
             ShowWindow(target, SW_SHOW);
         }
 
-        IntPtr foreWnd = GetForegroundWindow();
-        uint foreThread = GetWindowThreadProcessId(foreWnd, IntPtr.Zero);
-        uint appThread = GetCurrentThreadId();
+        // 核心修复：坚决不调用 AttachThreadInput(foreThread, appThread, true)！
+        // 理由：AttachThreadInput 会将本程序线程强行与游戏(VRChat)的前台线程输入队列绑定，
+        // 从而同步复制游戏中的“纯英文键盘布局/关闭IME”状态，导致本程序唤出后输入法无法打出中文候选词。
+        // 使用安全前台激活机制：
+        keybd_event(VK_MENU, 0, 0, 0);
+        keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+        BringWindowToTop(target);
+        SetForegroundWindow(target);
 
-        if (foreThread != appThread)
-        {
-            AttachThreadInput(foreThread, appThread, true);
-            SetForegroundWindow(target);
-            BringWindowToTop(target);
-            AttachThreadInput(foreThread, appThread, false);
-        }
-        else
-        {
-            SetForegroundWindow(target);
-            BringWindowToTop(target);
-        }
+        // 激活目标窗口时同步确保输入法就绪
+        EnsureImeActive(target);
     }
 }
