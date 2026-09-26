@@ -88,6 +88,26 @@ public sealed partial class TranslationSection : UserControl
         if (_isInitializing) return;
         SettingsService.Instance.IsTranslationEnabled = TranslationSwitch.IsOn;
         SettingsService.Instance.NotifyDisplaySettingsChanged();
+        SettingsService.Instance.AddLog("Translation", $"Ollama 翻译开关已{(TranslationSwitch.IsOn ? "开启" : "关闭")} (模型: {SettingsService.Instance.OllamaModel}, 目标语言: {SettingsService.Instance.TargetLanguage})", true);
+    }
+
+    private async void TestTranslationButton_Click(object sender, RoutedEventArgs e)
+    {
+        TestTranslationButton.IsEnabled = false;
+        OllamaStatusTextBlock.Text = "正在向 Ollama 发送测试翻译请求...";
+        try
+        {
+            var result = await SettingsService.Instance.TestOllamaTranslationAsync("你好，欢迎来到 VRChat！");
+            OllamaStatusTextBlock.Text = $"测试成功 ({result.LatencyMs}ms): \"你好，欢迎来到 VRChat！\" -> \"{result.Text}\"";
+        }
+        catch (Exception ex)
+        {
+            OllamaStatusTextBlock.Text = $"测试失败: {ex.Message}";
+        }
+        finally
+        {
+            TestTranslationButton.IsEnabled = true;
+        }
     }
 
     private void OllamaEndpointTextBox_TextChanged(object sender, TextChangedEventArgs e)

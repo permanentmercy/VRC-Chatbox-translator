@@ -9,12 +9,14 @@ public partial class SettingsService
 {
     public record SubtitleEntry(string Original, string Translated, long LatencyMs);
     private readonly List<SubtitleEntry> _subtitleEntries = new();
-    private CancellationTokenSource? _activeTranslationCts;
+    private CancellationTokenSource? _finalTranslationCts;
+    private CancellationTokenSource? _interimTranslationCts;
     private readonly object _translationLock = new();
     private string? _currentInterimTranslation;
     private string _lastInterimTranslationText = string.Empty;
     private DateTime _lastInterimTranslationTime = DateTime.MinValue;
-    private long _translationSequence = 0;
+    private long _finalTranslationSequence = 0;
+    private long _interimTranslationSequence = 0;
     private bool _isNewSentence = true;
     private string _lastHypothesisSpeech = string.Empty;
 
@@ -22,9 +24,14 @@ public partial class SettingsService
     {
         lock (_translationLock)
         {
-            _activeTranslationCts?.Cancel();
-            _activeTranslationCts?.Dispose();
-            _activeTranslationCts = null;
+            _finalTranslationCts?.Cancel();
+            _finalTranslationCts?.Dispose();
+            _finalTranslationCts = null;
+
+            _interimTranslationCts?.Cancel();
+            _interimTranslationCts?.Dispose();
+            _interimTranslationCts = null;
+
             _currentInterimTranslation = null;
             _lastInterimTranslationText = string.Empty;
             _lastInterimTranslationTime = DateTime.MinValue;
@@ -81,11 +88,11 @@ public partial class SettingsService
         bool isHalfway = hasComma || clean.Length >= 6;
         if (!isHalfway) return;
 
-        // 防抖节流检查：距离上次发起预翻译至少 750ms，且内容相较于上次预翻译新增 >= 3 个字（或者产生新标点）
+        // 防抖节流检查：距离上次发起预翻译至少 800ms，且内容相较于上次预翻译新增 >= 3 个字（或者产生新标点）
         DateTime now = DateTime.UtcNow;
         lock (_translationLock)
         {
-            if (now - _lastInterimTranslationTime < TimeSpan.FromMilliseconds(750))
+            if (now - _lastInterimTranslationTime < TimeSpan.FromMilliseconds(800))
             {
                 return;
             }
@@ -101,14 +108,15 @@ public partial class SettingsService
             _lastInterimTranslationText = clean;
         }
 
-        long seq = System.Threading.Interlocked.Increment(ref _translationSequence);
+        long seq = System.Threading.Interlocked.Increment(ref _interimTranslationSequence);
         CancellationTokenSource cts;
         lock (_translationLock)
         {
-            _activeTranslationCts?.Cancel();
-            _activeTranslationCts?.Dispose();
-            _activeTranslationCts = new CancellationTokenSource();
-            cts = _activeTranslationCts;
+            // 核心修复：仅取消上一个假说预翻译任务，绝对不取消或干扰已定稿句子的最终翻译！
+            _interimTranslationCts?.Cancel();
+            _interimTranslationCts?.Dispose();
+            _interimTranslationCts = new CancellationTokenSource();
+            cts = _interimTranslationCts;
         }
 
         _ = Task.Run(async () =>
@@ -118,7 +126,7 @@ public partial class SettingsService
             {
                 string targetLang = ParseTargetLanguage(TargetLanguage);
                 var result = await OllamaService.TranslateAsync(clean, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate, token);
-                if (token.IsCancellationRequested || seq < Volatile.Read(ref _translationSequence)) return;
+                if (token.IsCancellationRequested || seq < Volatile.Read(ref _interimTranslationSequence)) return;
 
                 string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
                 if (string.IsNullOrWhiteSpace(cleanTrans)) return;
@@ -135,7 +143,10 @@ public partial class SettingsService
                 UpdateCombinedSubtitles(interimText);
             }
             catch (OperationCanceledException) { }
-            catch (Exception) { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[InterimTranslation] Error: {ex.Message}");
+            }
         });
     }
 
@@ -160,7 +171,11 @@ public partial class SettingsService
 
         lock (_translationLock)
         {
-            // 完整句子已到，重置假说预翻译缓存并取消任何正在跑的中间请求
+            // 完整句子已到，取消假说预翻译
+            _interimTranslationCts?.Cancel();
+            _interimTranslationCts?.Dispose();
+            _interimTranslationCts = null;
+
             _currentInterimTranslation = null;
             _lastInterimTranslationText = string.Empty;
         }
@@ -173,27 +188,29 @@ public partial class SettingsService
 
         if (IsTranslationEnabled)
         {
-            long seq = System.Threading.Interlocked.Increment(ref _translationSequence);
+            long seq = System.Threading.Interlocked.Increment(ref _finalTranslationSequence);
             CancellationTokenSource cts;
             lock (_translationLock)
             {
-                _activeTranslationCts?.Cancel();
-                _activeTranslationCts?.Dispose();
-                _activeTranslationCts = new CancellationTokenSource();
-                cts = _activeTranslationCts;
+                _finalTranslationCts?.Cancel();
+                _finalTranslationCts?.Dispose();
+                _finalTranslationCts = new CancellationTokenSource();
+                cts = _finalTranslationCts;
             }
 
             _ = Task.Run(async () =>
             {
                 var token = cts.Token;
-                SpeechStatusUpdated?.Invoke("正在请求 Ollama AI 最终翻译...");
+                string targetLang = ParseTargetLanguage(TargetLanguage);
+                SpeechStatusUpdated?.Invoke($"正在请求 Ollama AI 翻译 ({OllamaModel})...");
+                AddLog("Translate Request", $"正在向 Ollama 请求翻译: \"{text}\" -> {targetLang} ({OllamaModel})", true);
+
                 try
                 {
-                    string targetLang = ParseTargetLanguage(TargetLanguage);
                     var result = await OllamaService.TranslateAsync(text, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate, token);
-                    if (token.IsCancellationRequested || seq < Volatile.Read(ref _translationSequence)) return;
+                    if (token.IsCancellationRequested || seq < Volatile.Read(ref _finalTranslationSequence)) return;
 
-                    AddLog("Translate", $"{result.Text} ({result.LatencyMs}ms)", true);
+                    AddLog("Translate Response", $"{result.Text} ({result.LatencyMs}ms)", true);
                     SpeechStatusUpdated?.Invoke($"翻译完成 ({result.LatencyMs}ms)");
 
                     // 更新队列中该句对应的翻译内容与延迟，精准覆盖
@@ -213,18 +230,38 @@ public partial class SettingsService
                 }
                 catch (OperationCanceledException)
                 {
-                    // 被更新的最新翻译请求抢占，安全退出
+                    AddLog("Translate Canceled", "前序翻译请求已取消", false);
                 }
                 catch (Exception ex)
                 {
                     if (!token.IsCancellationRequested)
                     {
                         string err = $"翻译失败: {ex.Message}";
-                        AddLog("Translate", err, false);
+                        AddLog("Translate Error", err, false, ex.Message);
                         SpeechStatusUpdated?.Invoke(err);
                     }
                 }
             });
+        }
+    }
+
+    /// <summary>
+    /// 手动发起一次 Ollama 连通性与翻译效果测试
+    /// </summary>
+    public async Task<TranslationResult> TestOllamaTranslationAsync(string testText = "你好，欢迎来到 VRChat！")
+    {
+        string targetLang = ParseTargetLanguage(TargetLanguage);
+        AddLog("Translate Test", $"正在发起 Ollama 连通性测试: \"{testText}\" -> {targetLang} ({OllamaModel})", true);
+        try
+        {
+            var result = await OllamaService.TranslateAsync(testText, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate);
+            AddLog("Translate Test Success", $"{result.Text} ({result.LatencyMs}ms)", true);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            AddLog("Translate Test Failed", $"测试失败: {ex.Message}", false, ex.Message);
+            throw;
         }
     }
 

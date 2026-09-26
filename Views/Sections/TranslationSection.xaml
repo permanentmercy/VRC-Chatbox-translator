@@ -51,9 +51,10 @@
                         <ComboBoxItem Content="西班牙语 (Spanish)" />
                     </ComboBox>
 
-                    <Grid Grid.Row="1" Grid.ColumnSpan="2" ColumnSpacing="8" Width="480" HorizontalAlignment="Left">
+                    <Grid Grid.Row="1" Grid.ColumnSpan="2" ColumnSpacing="8" Width="580" HorizontalAlignment="Left">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <ComboBox x:Name="OllamaModelComboBox" Header="翻译模型"
@@ -62,7 +63,14 @@
                                   SelectionChanged="OllamaModelComboBox_SelectionChanged" />
                         <Button x:Name="RefreshModelsButton" Grid.Column="1" VerticalAlignment="Bottom"
                                 Content="刷新模型" Click="RefreshModelsButton_Click" Margin="0,0,0,1" />
+                        <Button x:Name="TestTranslationButton" Grid.Column="2" VerticalAlignment="Bottom"
+                                Content="测试翻译" Click="TestTranslationButton_Click" Margin="0,0,0,1" />
                     </Grid>
+
+                    <TextBlock x:Name="OllamaStatusTextBlock" Grid.Row="2" Grid.ColumnSpan="2"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                               TextWrapping="Wrap" />
                 </Grid>
             </StackPanel>
         </Border>
