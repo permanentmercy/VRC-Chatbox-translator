@@ -117,4 +117,80 @@ public class OllamaService
 
         return models;
     }
+
+    /// <summary>
+    /// 请求 Ollama 立即将指定模型从显存中卸载丢弃 (keep_alive: 0)
+    /// </summary>
+    public async Task<bool> UnloadModelAsync(string model, string endpoint, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(model)) return false;
+        try
+        {
+            string cleanEndpoint = (endpoint ?? "http://127.0.0.1:11434").TrimEnd('/');
+            string url = $"{cleanEndpoint}/api/generate";
+
+            var payload = new
+            {
+                model = model.Trim(),
+                keep_alive = 0
+            };
+
+            string jsonPayload = JsonSerializer.Serialize(payload);
+            using var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            var response = await _httpClient.PostAsync(url, content, cts.Token);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 查询 Ollama 当前正在驻留显存的所有模型，并逐一发送请求彻底释放显存
+    /// </summary>
+    public async Task<int> UnloadAllModelsAsync(string endpoint, CancellationToken cancellationToken = default)
+    {
+        int unloadedCount = 0;
+        try
+        {
+            string cleanEndpoint = (endpoint ?? "http://127.0.0.1:11434").TrimEnd('/');
+            string psUrl = $"{cleanEndpoint}/api/ps";
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            var response = await _httpClient.GetAsync(psUrl, cts.Token);
+            if (!response.IsSuccessStatusCode) return 0;
+
+            string json = await response.Content.ReadAsStringAsync(cts.Token);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("models", out var modelsArray) && modelsArray.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in modelsArray.EnumerateArray())
+                {
+                    if (item.TryGetProperty("name", out var nameProp))
+                    {
+                        string? name = nameProp.GetString();
+                        if (!string.IsNullOrWhiteSpace(name))
+                        {
+                            bool success = await UnloadModelAsync(name, cleanEndpoint, cancellationToken);
+                            if (success) unloadedCount++;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore if Ollama offline
+        }
+
+        return unloadedCount;
+    }
 }
+

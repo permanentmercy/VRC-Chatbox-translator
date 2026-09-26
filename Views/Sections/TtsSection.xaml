@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="VrcChatboxDemo.Views.Sections.TtsSection"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <StackPanel Spacing="18">
+        <StackPanel Spacing="4">
+            <TextBlock Text="TTS 语音合成与虚拟麦克风" Style="{StaticResource TitleTextBlockStyle}" />
+            <TextBlock Text="基于 IndexTTS 1.5 专属微调模型直接推理，推流至虚拟声卡并在 VRChat 内实时发声"
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        </StackPanel>
+
+        <!-- 卡片 1: IndexTTS 引擎与后台微服务托管 -->
+        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="18">
+            <StackPanel Spacing="14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="IndexTTS 1.5 微服务状态" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                        <TextBlock Text="免参考音频纯模型直接推理 (Zero-Prompt)，专属微调权重，极低显存模式 (&lt; 1.28 GB)"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <ToggleSwitch x:Name="TtsEnableSwitch" Grid.Column="1"
+                                  Toggled="TtsEnableSwitch_Toggled"
+                                  ToolTipService.ToolTip="开启后允许合成语音并向虚拟麦克风推流" />
+                </Grid>
+
+                <Grid Background="{ThemeResource LayerFillColorDefaultBrush}"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1" CornerRadius="6" Padding="14,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border x:Name="StatusDot" Width="10" Height="10" CornerRadius="5" Background="Gray"
+                            VerticalAlignment="Center" Margin="0,0,10,0" />
+
+                    <TextBlock x:Name="ServerStatusTextBlock" Grid.Column="1"
+                               Text="正在探测服务状态..."
+                               VerticalAlignment="Center"
+                               Style="{StaticResource BodyTextBlockStyle}" />
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="StartServerButton" Content="启动引擎" Click="StartServerButton_Click" />
+                        <Button x:Name="StopServerButton" Content="停止引擎" Click="StopServerButton_Click" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid ColumnSpacing="20" RowSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="340" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBox x:Name="ServerEndpointTextBox" Header="TTS 服务端点 (REST API)"
+                             Text="http://127.0.0.1:9880"
+                             TextChanged="ServerEndpointTextBox_TextChanged" />
+
+                    <TextBox x:Name="ModelNameTextBox" Grid.Column="1" Header="微调模型权重"
+                             Text="gpt_me_lora.pth" IsReadOnly="True"
+                             ToolTipService.ToolTip="已锁定为专属微调 LoRA 权重，纯模型直接推理" />
+                </Grid>
+
+                <CheckBox x:Name="AutoStartServerCheckBox"
+                          Content="打开本软件时自动在后台启动 TTS 引擎微服务"
+                          Click="AutoStartServerCheckBox_Click" />
+            </StackPanel>
+        </Border>
+
+        <!-- 卡片 2: 虚拟麦克风与音频路由 -->
+        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="18">
+            <StackPanel Spacing="14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="音频输出与虚拟麦克风路由 (NAudio WASAPI)" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+                        <TextBlock Text="将合成的语音实时推送到虚拟声卡输入端 (CABLE Input)，由 VRChat 麦克风采集输出"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <Button x:Name="RefreshDevicesButton" Grid.Column="1"
+                            Content="刷新设备列表" Click="RefreshDevicesButton_Click" />
+                </Grid>
+
+                <!-- 虚拟麦克风输出设备选择 -->
+                <Grid ColumnSpacing="16" RowSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="420" />
+                        <ColumnDefinition Width="260" />
+                    </Grid.ColumnDefinitions>
+
+                    <ComboBox x:Name="VirtualMicComboBox" Header="VRChat 麦克风推流目标声卡 (推荐选择虚拟声卡，如 CABLE Input)"
+                              HorizontalAlignment="Stretch"
+                              SelectionChanged="VirtualMicComboBox_SelectionChanged" />
+
+                    <Slider x:Name="MicVolumeSlider" Grid.Column="1" Header="推流输出音量"
+                            Minimum="0" Maximum="200" StepFrequency="5"
+                            ValueChanged="MicVolumeSlider_ValueChanged" />
+                </Grid>
+
+                <!-- 本地耳机耳返监听配置 -->
+                <Border Background="{ThemeResource LayerFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="6" Padding="14,10">
+                    <StackPanel Spacing="10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="本地耳机同步耳返监听" Style="{StaticResource BodyTextBlockStyle}" FontWeight="SemiBold" />
+                                <TextBlock Text="开启后，TTS 播报时不仅推流至游戏麦克风，您自己的物理耳机也能同时听到，避免盲播"
+                                           Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <ToggleSwitch x:Name="MonitorToggleSwitch" Grid.Column="1"
+                                          Toggled="MonitorToggleSwitch_Toggled" />
+                        </Grid>
+
+                        <Grid ColumnSpacing="16" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="400" />
+                                <ColumnDefinition Width="240" />
+                            </Grid.ColumnDefinitions>
+
+                            <ComboBox x:Name="MonitorDeviceComboBox" Header="耳返监听设备 (选择您戴的物理耳机/扬声器)"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="MonitorDeviceComboBox_SelectionChanged" />
+
+                            <Slider x:Name="MonitorVolumeSlider" Grid.Column="1" Header="耳返监听音量"
+                                    Minimum="0" Maximum="200" StepFrequency="5"
+                                    ValueChanged="MonitorVolumeSlider_ValueChanged" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 虚拟声卡驱动状态与安装指引说明 -->
+                <InfoBar x:Name="VirtualCardInfoBar"
+                         IsOpen="True"
+                         IsClosable="False"
+                         Severity="Informational"
+                         Title="如何让 VRChat 麦克风听到合成语音？"
+                         Message="Windows 机制不允许软件直接向物理硬件麦克风灌入音频。要让 VRChat 听到 TTS 声音，需借助虚拟声卡跳线 (此处推流目标设为 CABLE Input，并在 VRChat 内把麦克风设为 CABLE Output；耳返耳机则选择您自己的物理耳机)。">
+                    <InfoBar.ActionButton>
+                        <Button x:Name="DownloadVbCableButton"
+                                Content="获取免费 VB-CABLE 虚拟声卡驱动"
+                                Click="DownloadVbCableButton_Click" />
+                    </InfoBar.ActionButton>
+                </InfoBar>
+            </StackPanel>
+        </Border>
+
+        <!-- 卡片 3: 语音合成与即时推流测试 -->
+        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="18">
+            <StackPanel Spacing="12">
+                <TextBlock Text="即时语音合成与推流测试" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                <TextBox x:Name="TestTextInputBox"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         Height="75"
+                         HorizontalAlignment="Stretch"
+                         Text="你好，这是来自 VRChat 的实时语音合成测试，无需参考音频，直接通过专属微调模型推理。" />
+
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="TestResultTextBlock" Text=""
+                               VerticalAlignment="Center"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                    <Button x:Name="SpeakToMicButton" Grid.Column="1"
+                            Content="立即合成并推流至虚拟麦克风"
+                            Click="SpeakToMicButton_Click" />
+
+                    <Button x:Name="ListenLocalButton" Grid.Column="2"
+                            Content="仅在本地耳机试听"
+                            Click="ListenLocalButton_Click" />
+
+                    <Button x:Name="StopPlaybackButton" Grid.Column="3"
+                            Content="停止播放" Click="StopPlaybackButton_Click" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- 卡片 4: 业务自动化联动 -->
+        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="18">
+            <StackPanel Spacing="14">
+                <TextBlock Text="自动化业务联动" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
+
+                <Grid ColumnSpacing="20" RowSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="340" />
+                    </Grid.ColumnDefinitions>
+
+                    <ToggleSwitch x:Name="AutoReadSentMessageSwitch" Header="打字发送时自动语音朗读"
+                                  Toggled="AutoReadSentMessageSwitch_Toggled"
+                                  ToolTipService.ToolTip="在聊天页面或沉浸式窗口按回车发送文字时，自动合成语音推送到 VRChat 麦克风" />
+
+                    <ToggleSwitch x:Name="AutoReadTranslationSwitch" Grid.Column="1" Header="双语翻译完成时自动朗读译文"
+                                  Toggled="AutoReadTranslationSwitch_Toggled"
+                                  ToolTipService.ToolTip="语音识别出中文并翻译为目标语言（如英语）后，自动通过 TTS 将翻译结果朗读给外国玩家听" />
+                </Grid>
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</UserControl>

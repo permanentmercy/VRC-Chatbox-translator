@@ -192,6 +192,16 @@ public partial class SettingsService
                 _lastOscSendTime = DateTime.UtcNow;
                 PersistentTextService.NotifyUserSentMessage();
 
+                // 若开启了打字发送时自动 TTS 语音朗读，清洗文本并触发推流
+                if (result && IsTtsEnabled && IsTtsAutoReadSentMessage && !string.IsNullOrWhiteSpace(finalMsg))
+                {
+                    string cleanTts = PrepareTextForTts(finalMsg);
+                    if (!string.IsNullOrWhiteSpace(cleanTts))
+                    {
+                        _ = SpeakTextAsync(cleanTts);
+                    }
+                }
+
                 // 再次确保打字状态在发完后处于关闭
                 await OscService.SendTypingAsync(false, recordLog: false);
 
@@ -227,5 +237,46 @@ public partial class SettingsService
     private void OnMessageSent(OscLogItem item)
     {
         AddLog(item.Address, item.Content, item.Success, item.Error);
+    }
+
+    /// <summary>
+    /// 对待发送给 TTS 的文本进行声学与标点规范化清洗
+    /// 1. 消除显式换行符与多余空白，换行转为逗号短暂停顿
+    /// 2. 过滤常见控制符、特殊符号与 VRChat 格式化标签（如 <color=...> 等）
+    /// 3. 若末尾缺乏终止标点，自动补齐句号，防止自回归 TTS 模型因缺失结束标记而在末尾产生电音、杂音或词尾拉长
+    /// </summary>
+    public static string PrepareTextForTts(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+
+        // 移除 VRChat 富文本标签如 <color=#ff0000>、<b>、</i> 等
+        string text = System.Text.RegularExpressions.Regex.Replace(input, @"<[^>]+>", "");
+
+        // 换行替换为逗号，使其在 TTS 中呈现自然语义停顿，而非断音或音素崩塌
+        text = text.Replace("\r\n", "，").Replace("\r", "，").Replace("\n", "，");
+
+        // 移除控制字符
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "");
+
+        // 规范化连续空白
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+
+        // 检查末尾标点。若没有句号、问号、感叹号等终止符，自动根据末尾字符类型补齐标点
+        char last = text[^1];
+        if (last != '。' && last != '！' && last != '？' && last != '.' && last != '!' && last != '?' && last != '…' && last != '~')
+        {
+            if ((last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') || (last >= '0' && last <= '9'))
+            {
+                text += ".";
+            }
+            else
+            {
+                text += "。";
+            }
+        }
+
+        return text;
     }
 }

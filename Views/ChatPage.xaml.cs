@@ -36,6 +36,8 @@ public sealed partial class ChatPage : Page
         s.DisplaySettingsChanged += OnDisplaySettingsChanged;
         s.SpeechStatusUpdated += OnSpeechStatusUpdated;
         s.RequestAutoFillInput += OnRequestAutoFillInput;
+        s.TtsActiveStateChanged += OnTtsActiveStateChanged;
+        s.TtsProgressChanged += OnTtsProgressChanged;
 
         RecognizedTextBlock.Text = s.LastRecognizedText;
         TranslatedTextBlock.Text = s.LastTranslatedText;
@@ -53,6 +55,43 @@ public sealed partial class ChatPage : Page
         s.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         s.SpeechStatusUpdated -= OnSpeechStatusUpdated;
         s.RequestAutoFillInput -= OnRequestAutoFillInput;
+        s.TtsActiveStateChanged -= OnTtsActiveStateChanged;
+        s.TtsProgressChanged -= OnTtsProgressChanged;
+    }
+
+    private void OnTtsActiveStateChanged(bool isActive)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (isActive)
+            {
+                TtsStatusPanel.Visibility = Visibility.Visible;
+                TtsProgressBar.Visibility = Visibility.Visible;
+                TtsProgressBar.IsIndeterminate = true;
+                TtsStatusTextBlock.Text = "正在合成语音...";
+            }
+            else
+            {
+                TtsStatusPanel.Visibility = Visibility.Collapsed;
+                TtsProgressBar.Visibility = Visibility.Collapsed;
+            }
+        });
+    }
+
+    private void OnTtsProgressChanged(double percent)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (percent < 0)
+            {
+                TtsProgressBar.IsIndeterminate = true;
+            }
+            else
+            {
+                TtsProgressBar.IsIndeterminate = false;
+                TtsProgressBar.Value = Math.Clamp(percent, 0, 100);
+            }
+        });
     }
 
     private void OnSpeechStatusUpdated(string status)
@@ -63,6 +102,11 @@ public sealed partial class ChatPage : Page
             if (s.IsSpeechRecognitionEnabled && string.IsNullOrWhiteSpace(s.LastRecognizedText))
             {
                 UpdateDisplayVisibility();
+            }
+
+            if (!string.IsNullOrWhiteSpace(status) && status != "就绪")
+            {
+                TtsStatusTextBlock.Text = status;
             }
         });
     }

@@ -150,6 +150,7 @@ public sealed partial class MainWindow : Window
         _allNavItems["chat"] = ChatNavItem;
         _allNavItems["speech"] = SpeechNavItem;
         _allNavItems["translation"] = TranslationNavItem;
+        _allNavItems["tts"] = TtsNavItem;
         _allNavItems["hotkey"] = HotkeyNavItem;
         _allNavItems["interaction"] = InteractionNavItem;
         _allNavItems["network"] = NetworkLogNavItem;
@@ -522,9 +523,18 @@ public sealed partial class MainWindow : Window
             : (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
     }
 
-    private void MainWindow_Closed(object sender, WindowEventArgs args)
+    private async void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         SettingsService.Instance.SaveConfigImmediately();
+        SettingsService.Instance.TtsService.Dispose();
+
+        // 软件关闭时通知 Ollama 卸载显存中的模型
+        try
+        {
+            await SettingsService.Instance.OllamaService.UnloadAllModelsAsync(SettingsService.Instance.OllamaEndpoint);
+        }
+        catch { }
+
         _trayIconService.RemoveTrayIcon();
         SettingsService.Instance.HotkeyService.HotkeyPressed -= OnHotkeyPressed;
         SettingsService.Instance.HotkeyService.Dispose();
@@ -546,6 +556,7 @@ public sealed partial class MainWindow : Window
                 "chat" => typeof(ChatPage),
                 "speech" => typeof(SpeechSettingsPage),
                 "translation" => typeof(TranslationSettingsPage),
+                "tts" => typeof(TtsSettingsPage),
                 "hotkey" => typeof(HotkeySettingsPage),
                 "interaction" => typeof(InteractionSettingsPage),
                 "network" => typeof(NetworkLogSettingsPage),

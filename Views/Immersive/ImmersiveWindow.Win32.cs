@@ -210,6 +210,21 @@ public sealed partial class ImmersiveWindow : Window
         }
         else if (uMsg == 0x0084 /* WM_NCHITTEST */)
         {
+            if (_isDragging)
+            {
+                return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            }
+
+            int screenX = unchecked((short)(long)lParam);
+            int screenY = unchecked((short)((long)lParam >> 16));
+
+            if (!IsScreenPointInInteractiveCards(screenX, screenY))
+            {
+                // 当鼠标落在任何非卡片区域（包括卡片上方、卡片下方、窗口多余区域等）时，
+                // 立即返回 HTTRANSPARENT (-1)，操作系统直接将所有鼠标点击、悬停、滚轮完全透传给下层游戏或应用
+                return (IntPtr)(-1 /* HTTRANSPARENT */);
+            }
+
             return DefSubclassProc(hWnd, uMsg, wParam, lParam);
         }
 

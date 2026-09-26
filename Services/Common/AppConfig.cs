@@ -103,4 +103,22 @@ public class AppConfig
     public int InboundHttpPort { get; set; } = 9002;
     public int InboundOscPort { get; set; } = 9001;
     public bool InboundAutoSendToVrc { get; set; } = true;
+
+    // ==========================================
+    // IndexTTS 语音合成与虚拟麦克风推流
+    // ==========================================
+    public bool IsTtsEnabled { get; set; } = false;
+    public string TtsServerEndpoint { get; set; } = "http://127.0.0.1:9880";
+    public int TtsServerPort { get; set; } = 9880;
+    public bool AutoStartTtsServer { get; set; } = false;
+    public string TtsPythonExePath { get; set; } = @"H:\program\chatbox\Index_TTS\coderyuanai\python.exe";
+    public string TtsServerScriptPath { get; set; } = @"H:\program\chatbox\Index_TTS\tts_server.py";
+    public string TtsModelName { get; set; } = "gpt_me_lora.pth";
+    public string TtsVirtualMicDeviceId { get; set; } = string.Empty;
+    public string TtsMonitorDeviceId { get; set; } = string.Empty;
+    public bool IsTtsMonitorEnabled { get; set; } = true;
+    public float TtsOutputVolume { get; set; } = 1.0f;
+    public float TtsMonitorVolume { get; set; } = 0.8f;
+    public bool IsTtsAutoReadSentMessage { get; set; } = false;
+    public bool IsTtsAutoReadTranslation { get; set; } = false;
 }

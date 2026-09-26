@@ -101,6 +101,11 @@
                             <FontIcon Glyph="&#xE8C1;" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
+                    <NavigationViewItem x:Name="TtsNavItem" Content="TTS 语音" Tag="tts">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE768;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
                     <NavigationViewItem x:Name="HotkeyNavItem" Content="快捷热键" Tag="hotkey">
                         <NavigationViewItem.Icon>
                             <FontIcon Glyph="&#xE765;" />

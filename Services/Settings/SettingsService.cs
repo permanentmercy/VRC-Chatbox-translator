@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using Microsoft.UI;
 using Microsoft.UI.Xaml.Media;
+using VrcChatboxDemo.Services.Tts;
 
 namespace VrcChatboxDemo.Services;
 
@@ -502,6 +503,319 @@ public partial class SettingsService
         set { if (Config.OllamaPromptTemplate != value) { Config.OllamaPromptTemplate = value; SaveConfigDebounced(); } }
     }
 
+    // ==========================================
+    // IndexTTS 语音合成与虚拟麦克风推流属性
+    // ==========================================
+    public TtsService TtsService => TtsService.Instance;
+
+    public bool IsTtsEnabled
+    {
+        get => Config.IsTtsEnabled;
+        set { if (Config.IsTtsEnabled != value) { Config.IsTtsEnabled = value; SaveConfigDebounced(); DisplaySettingsChanged?.Invoke(); } }
+    }
+    public string TtsServerEndpoint
+    {
+        get => Config.TtsServerEndpoint;
+        set { if (Config.TtsServerEndpoint != value) { Config.TtsServerEndpoint = value; SaveConfigDebounced(); } }
+    }
+    public int TtsServerPort
+    {
+        get => Config.TtsServerPort;
+        set { if (Config.TtsServerPort != value) { Config.TtsServerPort = value; SaveConfigDebounced(); } }
+    }
+    public bool AutoStartTtsServer
+    {
+        get => Config.AutoStartTtsServer;
+        set { if (Config.AutoStartTtsServer != value) { Config.AutoStartTtsServer = value; SaveConfigDebounced(); } }
+    }
+    public string TtsPythonExePath
+    {
+        get => Config.TtsPythonExePath;
+        set { if (Config.TtsPythonExePath != value) { Config.TtsPythonExePath = value; SaveConfigDebounced(); } }
+    }
+    public string TtsServerScriptPath
+    {
+        get => Config.TtsServerScriptPath;
+        set { if (Config.TtsServerScriptPath != value) { Config.TtsServerScriptPath = value; SaveConfigDebounced(); } }
+    }
+    public string TtsModelName
+    {
+        get => Config.TtsModelName;
+        set { if (Config.TtsModelName != value) { Config.TtsModelName = value; SaveConfigDebounced(); } }
+    }
+    public string TtsVirtualMicDeviceId
+    {
+        get => Config.TtsVirtualMicDeviceId;
+        set { if (Config.TtsVirtualMicDeviceId != value) { Config.TtsVirtualMicDeviceId = value; SaveConfigDebounced(); } }
+    }
+    public string TtsMonitorDeviceId
+    {
+        get => Config.TtsMonitorDeviceId;
+        set { if (Config.TtsMonitorDeviceId != value) { Config.TtsMonitorDeviceId = value; SaveConfigDebounced(); } }
+    }
+    public bool IsTtsMonitorEnabled
+    {
+        get => Config.IsTtsMonitorEnabled;
+        set { if (Config.IsTtsMonitorEnabled != value) { Config.IsTtsMonitorEnabled = value; SaveConfigDebounced(); } }
+    }
+    public float TtsOutputVolume
+    {
+        get => Config.TtsOutputVolume;
+        set { if (Math.Abs(Config.TtsOutputVolume - value) > 0.001f) { Config.TtsOutputVolume = value; SaveConfigDebounced(); } }
+    }
+    public float TtsMonitorVolume
+    {
+        get => Config.TtsMonitorVolume;
+        set { if (Math.Abs(Config.TtsMonitorVolume - value) > 0.001f) { Config.TtsMonitorVolume = value; SaveConfigDebounced(); } }
+    }
+    public bool IsTtsAutoReadSentMessage
+    {
+        get => Config.IsTtsAutoReadSentMessage;
+        set { if (Config.IsTtsAutoReadSentMessage != value) { Config.IsTtsAutoReadSentMessage = value; SaveConfigDebounced(); } }
+    }
+    public bool IsTtsAutoReadTranslation
+    {
+        get => Config.IsTtsAutoReadTranslation;
+        set { if (Config.IsTtsAutoReadTranslation != value) { Config.IsTtsAutoReadTranslation = value; SaveConfigDebounced(); } }
+    }
+
+    /// <summary>
+    /// 流式分句推流管线：对长句或多句进行语义断句，首句合成完成立即推流，后续分句边播放边后台生成无缝衔接
+    /// </summary>
+    public async Task<bool> SpeakTextStreamAsync(string text, bool force = false)
+    {
+        if (!force && !IsTtsEnabled)
+        {
+            return false;
+        }
+
+        var clauses = SplitIntoSpeechClauses(text);
+        if (clauses.Count == 0) return false;
+
+        TtsActiveStateChanged?.Invoke(true);
+        TtsProgressChanged?.Invoke(-1);
+        SpeechStatusUpdated?.Invoke(clauses.Count > 1 ? $"正在合成语音 (1/{clauses.Count})..." : "正在合成语音...");
+
+        try
+        {
+            bool ok = await TtsService.PlayStreamAsync(
+                clauses,
+                TtsVirtualMicDeviceId,
+                TtsMonitorDeviceId,
+                IsTtsMonitorEnabled,
+                TtsOutputVolume,
+                TtsMonitorVolume,
+                onClauseSynthesized: (idx, total) =>
+                {
+                    double pct = (idx + 1.0) / total * 100.0;
+                    TtsProgressChanged?.Invoke(pct);
+                    SpeechStatusUpdated?.Invoke($"正在合成语音 ({idx + 1}/{total})...");
+                },
+                onClausePlaying: (idx, total) =>
+                {
+                    SpeechStatusUpdated?.Invoke($"正在推流播放 ({idx}/{total})...");
+                }
+            );
+
+            if (ok)
+            {
+                AddLog("TTS Speech", $"流式语音推流完成: \"{text}\" ({clauses.Count}个分句)", true);
+            }
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            AddLog("TTS Error", $"流式推流异常: {ex.Message}", false, ex.Message);
+            return false;
+        }
+        finally
+        {
+            TtsProgressChanged?.Invoke(100);
+            TtsActiveStateChanged?.Invoke(false);
+            SpeechStatusUpdated?.Invoke("就绪");
+        }
+    }
+
+    /// <summary>
+    /// 仅在本地耳机流式试听
+    /// </summary>
+    public async Task<bool> SpeakLocalPreviewStreamAsync(string text)
+    {
+        var clauses = SplitIntoSpeechClauses(text);
+        if (clauses.Count == 0) return false;
+
+        TtsActiveStateChanged?.Invoke(true);
+        TtsProgressChanged?.Invoke(-1);
+        SpeechStatusUpdated?.Invoke("正在合成试听语音...");
+
+        try
+        {
+            return await TtsService.PlayStreamAsync(
+                clauses,
+                virtualMicDeviceId: null,
+                monitorDeviceId: TtsMonitorDeviceId,
+                enableMonitor: true,
+                micVolume: 0f,
+                monitorVolume: TtsMonitorVolume,
+                onClauseSynthesized: (idx, total) =>
+                {
+                    TtsProgressChanged?.Invoke((idx + 1.0) / total * 100.0);
+                    SpeechStatusUpdated?.Invoke($"正在合成试听 ({idx + 1}/{total})...");
+                },
+                onClausePlaying: (idx, total) =>
+                {
+                    SpeechStatusUpdated?.Invoke($"正在试听播放 ({idx}/{total})...");
+                }
+            );
+        }
+        finally
+        {
+            TtsProgressChanged?.Invoke(100);
+            TtsActiveStateChanged?.Invoke(false);
+            SpeechStatusUpdated?.Invoke("就绪");
+        }
+    }
+
+    /// <summary>
+    /// 智能语义断句算法：将整段长文本切分为呼吸停顿自然的子句，并自适应补齐句号，防止模型自回归尾音发散
+    /// 1. 先按显式标点与换行切分；
+    /// 2. 对无标点或单句过长（>12-14字）的长段落，在空格、常见逻辑连接词（然后、但是、而且等）或适度字数处进行语义细分；
+    /// 3. 合理控制颗粒度，使首句能够极速（~200-300ms）出声，后续分句边播放边后台生成无缝衔接。
+    /// </summary>
+    public static List<string> SplitIntoSpeechClauses(string input)
+    {
+        var rawClauses = new List<string>();
+        if (string.IsNullOrWhiteSpace(input)) return rawClauses;
+
+        // 1. 根据显式标点与换行切分
+        char[] delims = new[] { '。', '！', '？', '；', '，', '、', '.', '!', '?', ';', ',', '\n', '\r', '…', '~' };
+        int start = 0;
+        for (int i = 0; i < input.Length; i++)
+        {
+            char c = input[i];
+            if (Array.IndexOf(delims, c) >= 0)
+            {
+                string clause = input.Substring(start, i - start + 1).Trim();
+                if (!string.IsNullOrWhiteSpace(clause))
+                {
+                    rawClauses.Add(clause);
+                }
+                start = i + 1;
+            }
+        }
+        if (start < input.Length)
+        {
+            string tail = input.Substring(start).Trim();
+            if (!string.IsNullOrWhiteSpace(tail))
+            {
+                rawClauses.Add(tail);
+            }
+        }
+
+        if (rawClauses.Count == 0)
+        {
+            rawClauses.Add(input);
+        }
+
+        // 2. 二次智能细分：若某个分句过长（超过 14 个字符且无断点），按空格、常见转折/并列连词或自然字数切分
+        var subDivided = new List<string>();
+        string[] connectors = new[] { "然后", "但是", "而且", "所以", "并且", "因为", "如果", "虽然", "不过", "以及", "或者", "就是", "还有", "另外", "同时", "接着", "之后" };
+
+        foreach (var clause in rawClauses)
+        {
+            string trimmed = clause.Trim();
+            if (trimmed.Length <= 14)
+            {
+                subDivided.Add(trimmed);
+                continue;
+            }
+
+            // 针对超长句进行逐段切割
+            string remaining = trimmed;
+            while (remaining.Length > 14)
+            {
+                int splitIdx = -1;
+
+                // 2.1 尝试寻找空格
+                int spaceIdx = remaining.IndexOf(' ', 6);
+                if (spaceIdx > 0 && spaceIdx <= 14)
+                {
+                    splitIdx = spaceIdx;
+                }
+
+                // 2.2 尝试寻找中文逻辑连接词
+                if (splitIdx < 0)
+                {
+                    foreach (var conn in connectors)
+                    {
+                        int cIdx = remaining.IndexOf(conn, 5, StringComparison.Ordinal);
+                        if (cIdx >= 5 && cIdx <= 14)
+                        {
+                            splitIdx = cIdx;
+                            break;
+                        }
+                    }
+                }
+
+                // 2.3 无明显连接词，则直接在自然边界（第 10-12 字）切分
+                if (splitIdx < 0)
+                {
+                    splitIdx = Math.Min(12, remaining.Length / 2);
+                }
+
+                string chunk = remaining.Substring(0, splitIdx).Trim();
+                if (!string.IsNullOrWhiteSpace(chunk))
+                {
+                    subDivided.Add(chunk);
+                }
+                remaining = remaining.Substring(splitIdx).Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(remaining))
+            {
+                subDivided.Add(remaining);
+            }
+        }
+
+        // 3. 智能粘合过短的单个字或语气词（纯文字长度 <= 1，如单个“好”或“嗯”，避免切得太碎导致音素失真）
+        var merged = new List<string>();
+        for (int i = 0; i < subDivided.Count; i++)
+        {
+            string item = subDivided[i];
+            string plain = item.Trim('。', '.', '！', '!', '？', '?', '，', ',', '、', '…', '~', ' ');
+            if (merged.Count > 0 && plain.Length <= 1)
+            {
+                merged[^1] = merged[^1].TrimEnd('。', '.', '！', '!', '？', '?', '，', ',', '、') + "，" + item;
+            }
+            else
+            {
+                merged.Add(item);
+            }
+        }
+
+        // 4. 对每个分句规范化标点与声学清洗
+        var result = new List<string>();
+        foreach (var c in merged)
+        {
+            string prepared = PrepareTextForTts(c);
+            if (!string.IsNullOrWhiteSpace(prepared))
+            {
+                result.Add(prepared);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 兼容调用：默认通过流式分句管线推流输出
+    /// </summary>
+    public async Task<TtsSynthesisResult> SpeakTextAsync(string text, bool force = false)
+    {
+        bool ok = await SpeakTextStreamAsync(text, force);
+        return new TtsSynthesisResult(ok, null, 0, 0, 24000, ok ? null : "流式合成推流未完成");
+    }
+
     // 实时状态
     public string LastRecognizedText { get; private set; } = string.Empty;
     public string LastTranslatedText { get; private set; } = string.Empty;
@@ -513,6 +827,8 @@ public partial class SettingsService
     public event Action<string>? SpeechHypothesisUpdated;
     public event Action<string, long>? TranslationUpdated;
     public event Action<string>? SpeechStatusUpdated;
+    public event Action<bool>? TtsActiveStateChanged;
+    public event Action<double>? TtsProgressChanged;
     public event Action? DisplaySettingsChanged;
     public event Action<string>? RequestAutoFillInput;
     public event Action<bool>? ImmersiveModeToggled;

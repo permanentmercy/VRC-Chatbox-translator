@@ -34,14 +34,7 @@ public sealed partial class ImmersiveWindow : Window
                 int y2 = (int)Math.Ceiling((_inputCardBounds.Y + _inputCardBounds.Height) * scale) + 2;
                 int radius = (int)Math.Round(10 * scale);
 
-                // 预留卡片下方输入法候选窗口 (IME Candidate Window) 显示空间，防止中文候选框被 SetWindowRgn 强制裁切屏蔽
-                int imeCandidateHeight = (int)Math.Ceiling(140 * scale);
-                IntPtr cardRgn = CreateRoundRectRgn(x1, y1, x2, y2, radius * 2, radius * 2);
-                IntPtr imeRgn = CreateRectRgn(x1, y2 - 2, x2, y2 + imeCandidateHeight);
-                inputRgn = CreateRectRgn(0, 0, 0, 0);
-                CombineRgn(inputRgn, cardRgn, imeRgn, RGN_OR);
-                DeleteObject(cardRgn);
-                DeleteObject(imeRgn);
+                inputRgn = CreateRoundRectRgn(x1, y1, x2, y2, radius * 2, radius * 2);
             }
             else
             {
@@ -87,8 +80,58 @@ public sealed partial class ImmersiveWindow : Window
             {
                 SetWindowRgn(_hWnd, finalRgn, true);
             }
+            else
+            {
+                // 无任何可见卡片时，完全镂空窗口实现 100% 鼠标穿透
+                IntPtr emptyRgn = CreateRectRgn(0, 0, 0, 0);
+                SetWindowRgn(_hWnd, emptyRgn, true);
+            }
         }
         catch { }
+    }
+
+    /// <summary>
+    /// 判断屏幕坐标 (screenX, screenY) 是否落在任何一个可交互的卡片内部
+    /// 用于 WM_NCHITTEST 返回 HTTRANSPARENT 兜底，确保卡片之外（上方、下方、两侧等）100% 穿透到下层游戏窗口
+    /// </summary>
+    private bool IsScreenPointInInteractiveCards(int screenX, int screenY)
+    {
+        if (_hWnd == IntPtr.Zero) return false;
+        if (!GetWindowRect(_hWnd, out RECT winRect)) return false;
+
+        uint dpi = GetDpiForWindow(_hWnd);
+        float scale = (dpi > 0) ? dpi / 96f : 1f;
+
+        // 检查 InputCard 命中范围
+        if (InputCard != null && InputCard.ActualHeight > 0 && !_inputCardBounds.IsEmpty && _inputCardBounds.Width > 0 && _inputCardBounds.Height > 0)
+        {
+            int x1 = winRect.Left + (int)Math.Floor(_inputCardBounds.X * scale) - 2;
+            int y1 = winRect.Top + (int)Math.Floor(_inputCardBounds.Y * scale) - 2;
+            int x2 = winRect.Left + (int)Math.Ceiling((_inputCardBounds.X + _inputCardBounds.Width) * scale) + 2;
+            int y2 = winRect.Top + (int)Math.Ceiling((_inputCardBounds.Y + _inputCardBounds.Height) * scale) + 2;
+
+            if (screenX >= x1 && screenX <= x2 && screenY >= y1 && screenY <= y2)
+            {
+                return true;
+            }
+        }
+
+        // 检查 SpeechDisplayCard 命中范围
+        if (SpeechDisplayCard != null && SpeechDisplayCard.Visibility == Visibility.Visible && SpeechDisplayCard.ActualHeight > 0 &&
+            !_speechCardBounds.IsEmpty && _speechCardBounds.Width > 0 && _speechCardBounds.Height > 0)
+        {
+            int sx1 = winRect.Left + (int)Math.Floor(_speechCardBounds.X * scale) - 2;
+            int sy1 = winRect.Top + (int)Math.Floor(_speechCardBounds.Y * scale) - 2;
+            int sx2 = winRect.Left + (int)Math.Ceiling((_speechCardBounds.X + _speechCardBounds.Width) * scale) + 2;
+            int sy2 = winRect.Top + (int)Math.Ceiling((_speechCardBounds.Y + _speechCardBounds.Height) * scale) + 2;
+
+            if (screenX >= sx1 && screenX <= sx2 && screenY >= sy1 && screenY <= sy2)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void EnsureWindowPosition()

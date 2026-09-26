@@ -106,14 +106,48 @@
                     </TextBox.Resources>
                 </TextBox>
 
-                <!-- 字符数提示 -->
-                <TextBlock x:Name="CharCountTextBlock"
-                           HorizontalAlignment="Right"
-                           VerticalAlignment="Bottom"
-                           Margin="0,0,14,6"
-                           Text="0 / 144 "
-                           Style="{StaticResource CaptionTextBlockStyle}"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <!-- 底部状态指示栏：左侧 TTS/语音状态，右侧字符统计 -->
+                <Grid VerticalAlignment="Bottom" Margin="14,0,14,6" IsHitTestVisible="False">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- TTS 实时状态提示 (打字自动合成与推流进度) -->
+                    <StackPanel x:Name="TtsStatusPanel"
+                                Grid.Column="0"
+                                Orientation="Horizontal"
+                                Spacing="6"
+                                VerticalAlignment="Center"
+                                Visibility="Collapsed">
+                        <ProgressRing x:Name="TtsStatusRing"
+                                      Width="12"
+                                      Height="12"
+                                      IsActive="True" />
+                        <TextBlock x:Name="TtsStatusTextBlock"
+                                   Text="正在合成语音..."
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+
+                    <!-- 字符数提示 -->
+                    <TextBlock x:Name="CharCountTextBlock"
+                               Grid.Column="1"
+                               VerticalAlignment="Center"
+                               Text="0 / 144 "
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </Grid>
+
+                <!-- 卡片底部微型进度条 -->
+                <ProgressBar x:Name="TtsProgressBar"
+                             VerticalAlignment="Bottom"
+                             HorizontalAlignment="Stretch"
+                             Height="2"
+                             CornerRadius="1"
+                             Visibility="Collapsed"
+                             IsIndeterminate="True" />
             </Grid>
         </Border>
     </Grid>

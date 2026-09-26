@@ -83,12 +83,26 @@ public sealed partial class TranslationSection : UserControl
         }
     }
 
-    private void TranslationSwitch_Toggled(object sender, RoutedEventArgs e)
+    private async void TranslationSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_isInitializing) return;
         SettingsService.Instance.IsTranslationEnabled = TranslationSwitch.IsOn;
         SettingsService.Instance.NotifyDisplaySettingsChanged();
         SettingsService.Instance.AddLog("Translation", $"Ollama 翻译开关已{(TranslationSwitch.IsOn ? "开启" : "关闭")} (模型: {SettingsService.Instance.OllamaModel}, 目标语言: {SettingsService.Instance.TargetLanguage})", true);
+
+        // 如果关闭翻译服务，立即向 Ollama 发送请求将模型从显存中卸载丢弃
+        if (!TranslationSwitch.IsOn)
+        {
+            try
+            {
+                int unloaded = await SettingsService.Instance.OllamaService.UnloadAllModelsAsync(SettingsService.Instance.OllamaEndpoint);
+                if (unloaded > 0)
+                {
+                    SettingsService.Instance.AddLog("Translation", $"已自动将 {unloaded} 个 Ollama 模型从 GPU 显存中卸载丢弃", true);
+                }
+            }
+            catch { }
+        }
     }
 
     private async void TestTranslationButton_Click(object sender, RoutedEventArgs e)
@@ -120,16 +134,36 @@ public sealed partial class TranslationSection : UserControl
         }
     }
 
-    private void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_isInitializing) return;
+        string oldModel = SettingsService.Instance.OllamaModel;
+        string? newModel = null;
         if (OllamaModelComboBox.SelectedItem is string modelStr)
         {
-            SettingsService.Instance.OllamaModel = modelStr;
+            newModel = modelStr;
         }
         else if (!string.IsNullOrWhiteSpace(OllamaModelComboBox.Text))
         {
-            SettingsService.Instance.OllamaModel = OllamaModelComboBox.Text.Trim();
+            newModel = OllamaModelComboBox.Text.Trim();
+        }
+
+        if (!string.IsNullOrEmpty(newModel) && !string.Equals(oldModel, newModel, StringComparison.OrdinalIgnoreCase))
+        {
+            SettingsService.Instance.OllamaModel = newModel;
+            // 切换模型时，把上一个模型的权重从显存中丢弃
+            if (!string.IsNullOrEmpty(oldModel))
+            {
+                try
+                {
+                    bool ok = await SettingsService.Instance.OllamaService.UnloadModelAsync(oldModel, SettingsService.Instance.OllamaEndpoint);
+                    if (ok)
+                    {
+                        SettingsService.Instance.AddLog("Translation", $"已将旧模型 [{oldModel}] 从显存中丢弃释放", true);
+                    }
+                }
+                catch { }
+            }
         }
     }
 

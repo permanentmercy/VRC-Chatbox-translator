@@ -227,6 +227,16 @@ public partial class SettingsService
                     // 终态精准覆盖变量
                     VariableService.SetVariable("translation", cleanTrans);
                     UpdateCombinedSubtitles();
+
+                    // 若开启了翻译结果自动 TTS 语音朗读，触发推流 (读给外国玩家听)
+                    if (IsTtsEnabled && IsTtsAutoReadTranslation && !string.IsNullOrWhiteSpace(cleanTrans))
+                    {
+                        string cleanTts = PrepareTextForTts(cleanTrans);
+                        if (!string.IsNullOrWhiteSpace(cleanTts))
+                        {
+                            _ = SpeakTextAsync(cleanTts);
+                        }
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -419,6 +429,11 @@ public partial class SettingsService
                 SpeechStatusUpdated?.Invoke(SpeechStatus);
                 DisplaySettingsChanged?.Invoke();
                 await ApplySpeechStateAsync();
+            }
+
+            if (Config.IsTtsEnabled && Config.AutoStartTtsServer)
+            {
+                _ = TtsService.StartManagedServerAsync();
             }
         }
         catch (Exception ex)

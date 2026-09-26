@@ -84,10 +84,14 @@ public sealed partial class ImmersiveWindow : Window
         s.DisplaySettingsChanged += OnDisplaySettingsChanged;
         s.SpeechStatusUpdated += OnSpeechStatusUpdated;
         s.RequestAutoFillInput += OnRequestAutoFillInput;
+        s.TtsActiveStateChanged += OnTtsActiveStateChanged;
+        s.TtsProgressChanged += OnTtsProgressChanged;
 
         EnsureWindowPosition();
         UpdateDisplayVisibility();
         UpdateImmersiveLayout();
+
+        InputCard.SizeChanged += (s, e) => UpdateHitBounds();
 
         Closed += ImmersiveWindow_Closed;
     }
@@ -101,8 +105,48 @@ public sealed partial class ImmersiveWindow : Window
         s.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         s.SpeechStatusUpdated -= OnSpeechStatusUpdated;
         s.RequestAutoFillInput -= OnRequestAutoFillInput;
+        s.TtsActiveStateChanged -= OnTtsActiveStateChanged;
+        s.TtsProgressChanged -= OnTtsProgressChanged;
 
         RemoveWindowSubclass(_hWnd, _subclassProc, (UIntPtr)101);
+    }
+
+    private void OnTtsActiveStateChanged(bool isActive)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (isActive)
+            {
+                TtsProgressContainer.Visibility = Visibility.Visible;
+                TtsProgressBar.IsIndeterminate = true;
+                TtsStatusTextBlock.Text = "正在合成语音...";
+                TtsPercentTextBlock.Text = string.Empty;
+            }
+            else
+            {
+                TtsProgressContainer.Visibility = Visibility.Collapsed;
+            }
+            InputCard.UpdateLayout();
+            UpdateHitBounds();
+        });
+    }
+
+    private void OnTtsProgressChanged(double percent)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (percent < 0)
+            {
+                TtsProgressBar.IsIndeterminate = true;
+                TtsPercentTextBlock.Text = string.Empty;
+            }
+            else
+            {
+                TtsProgressBar.IsIndeterminate = false;
+                TtsProgressBar.Value = Math.Clamp(percent, 0, 100);
+                TtsPercentTextBlock.Text = $"{(int)percent}%";
+            }
+        });
     }
 
     private void OnSpeechStatusUpdated(string status)
@@ -113,6 +157,11 @@ public sealed partial class ImmersiveWindow : Window
             if (s.IsSpeechRecognitionEnabled && string.IsNullOrWhiteSpace(s.LastRecognizedText))
             {
                 UpdateDisplayVisibility();
+            }
+
+            if (!string.IsNullOrWhiteSpace(status) && status != "就绪")
+            {
+                TtsStatusTextBlock.Text = status;
             }
         });
     }

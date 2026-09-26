@@ -87,88 +87,130 @@
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Top">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <!-- 消息输入区域 -->
-                    <ColumnDefinition Width="*" />
-                    <!-- 右侧字符数与空白拖拽区域 -->
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-                <!-- 隐藏的尺寸测量文本块：实时根据文字自动换行计算出精确的行高 -->
-                <TextBlock x:Name="MeasureTextBlock"
-                           Grid.Column="0"
-                           Opacity="0"
-                           IsHitTestVisible="False"
-                           TextWrapping="Wrap"
-                           FontSize="16"
-                           Text="A"
-                           Padding="14,6,8,6"
-                           HorizontalAlignment="Stretch"
-                           VerticalAlignment="Top" />
+                <!-- 行 0: 消息输入框与右侧控制区 -->
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <!-- 消息输入区域 -->
+                        <ColumnDefinition Width="*" />
+                        <!-- 右侧字符数与空白拖拽区域 -->
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                <!-- 消息输入框 -->
-                <TextBox x:Name="MessageInputBox"
-                         InputScope="Chat"
-                         Grid.Column="0"
-                         HorizontalAlignment="Stretch"
-                         VerticalAlignment="Stretch"
-                         AcceptsReturn="True"
-                         TextWrapping="Wrap"
-                         BorderThickness="0"
-                         Background="Transparent"
-                         FontSize="16"
-                         MinHeight="36"
-                         Padding="14,6,8,6"
-                         ScrollViewer.VerticalScrollBarVisibility="Hidden"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                         TextChanged="MessageInputBox_TextChanged"
-                         PreviewKeyDown="MessageInputBox_PreviewKeyDown"
-                         TextCompositionStarted="MessageInputBox_TextCompositionStarted"
-                         TextCompositionEnded="MessageInputBox_TextCompositionEnded">
-                    <TextBox.Resources>
-                        <SolidColorBrush x:Key="TextControlBackground" Color="Transparent" />
-                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
-                        <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
-                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent" />
-                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent" />
-                        <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
-                    </TextBox.Resources>
-                </TextBox>
+                    <!-- 隐藏的尺寸测量文本块：实时根据文字自动换行计算出精确的行高 -->
+                    <TextBlock x:Name="MeasureTextBlock"
+                               Grid.Column="0"
+                               Opacity="0"
+                               IsHitTestVisible="False"
+                               TextWrapping="Wrap"
+                               FontSize="16"
+                               Text="A"
+                               Padding="14,6,8,6"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Top" />
 
-                <!-- 右侧字符计数、退出按钮与空白拖拽区域 -->
-                <Border x:Name="RightDragHandle"
-                        Grid.Column="1"
-                        Background="Transparent"
-                        Padding="4,0,8,0"
-                        VerticalAlignment="Stretch"
-                        ToolTipService.ToolTip="拖动浮层窗口 (或按住 Alt / 鼠标中键拖拽)">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Spacing="6" Margin="0,0,0,6">
-                        <TextBlock x:Name="CharCountTextBlock"
-                                   VerticalAlignment="Center"
-                                   Text="0 / 144 "
-                                   Style="{StaticResource CaptionTextBlockStyle}"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <Button x:Name="ExitImmersiveButton"
-                                Click="ExitImmersiveButton_Click"
-                                ToolTipService.ToolTip="退出沉浸模式 (Esc 或快捷键)"
-                                VerticalAlignment="Center"
-                                Width="24"
-                                Height="24"
-                                Padding="0"
-                                Background="Transparent"
-                                BorderThickness="0">
-                            <Button.Resources>
-                                <SolidColorBrush x:Key="ButtonBackground" Color="Transparent" />
-                                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#22FFFFFF" />
-                                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#44FFFFFF" />
-                                <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
-                                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
-                                <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
-                            </Button.Resources>
-                            <FontIcon Glyph="&#xE711;" FontSize="10" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                        </Button>
+                    <!-- 消息输入框 -->
+                    <TextBox x:Name="MessageInputBox"
+                             InputScope="Chat"
+                             Grid.Column="0"
+                             HorizontalAlignment="Stretch"
+                             VerticalAlignment="Stretch"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             BorderThickness="0"
+                             Background="Transparent"
+                             FontSize="16"
+                             MinHeight="36"
+                             Padding="14,6,8,6"
+                             ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             TextChanged="MessageInputBox_TextChanged"
+                             PreviewKeyDown="MessageInputBox_PreviewKeyDown"
+                             TextCompositionStarted="MessageInputBox_TextCompositionStarted"
+                             TextCompositionEnded="MessageInputBox_TextCompositionEnded">
+                        <TextBox.Resources>
+                            <SolidColorBrush x:Key="TextControlBackground" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
+                        </TextBox.Resources>
+                    </TextBox>
+
+                    <!-- 右侧字符计数、退出按钮与空白拖拽区域 -->
+                    <Border x:Name="RightDragHandle"
+                            Grid.Column="1"
+                            Background="Transparent"
+                            Padding="4,0,8,0"
+                            VerticalAlignment="Stretch"
+                            ToolTipService.ToolTip="拖动浮层窗口 (或按住 Alt / 鼠标中键拖拽)">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Spacing="6" Margin="0,0,0,6">
+                            <TextBlock x:Name="CharCountTextBlock"
+                                       VerticalAlignment="Center"
+                                       Text="0 / 144 "
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Button x:Name="ExitImmersiveButton"
+                                    Click="ExitImmersiveButton_Click"
+                                    ToolTipService.ToolTip="退出沉浸模式 (Esc 或快捷键)"
+                                    VerticalAlignment="Center"
+                                    Width="24"
+                                    Height="24"
+                                    Padding="0"
+                                    Background="Transparent"
+                                    BorderThickness="0">
+                                <Button.Resources>
+                                    <SolidColorBrush x:Key="ButtonBackground" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#22FFFFFF" />
+                                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#44FFFFFF" />
+                                    <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+                                </Button.Resources>
+                                <FontIcon Glyph="&#xE711;" FontSize="10" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- 行 1: TTS 细长圆角白色合成进度条 (合成时展开让输入框向下延伸留出位置，合成完毕后收回) -->
+                <Grid x:Name="TtsProgressContainer"
+                      Grid.Row="1"
+                      Visibility="Collapsed"
+                      Margin="14,0,14,8">
+                    <StackPanel Spacing="5">
+                        <Grid>
+                            <TextBlock x:Name="TtsStatusTextBlock"
+                                       Text="正在合成语音..."
+                                       FontSize="11"
+                                       Foreground="#CCFFFFFF"
+                                       HorizontalAlignment="Left" />
+                            <TextBlock x:Name="TtsPercentTextBlock"
+                                       Text=""
+                                       FontSize="11"
+                                       Foreground="#80FFFFFF"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+                        <ProgressBar x:Name="TtsProgressBar"
+                                     IsIndeterminate="True"
+                                     Height="3"
+                                     CornerRadius="1.5"
+                                     Foreground="White"
+                                     Background="#33FFFFFF"
+                                     HorizontalAlignment="Stretch">
+                            <ProgressBar.Resources>
+                                <SolidColorBrush x:Key="ProgressBarForeground" Color="White" />
+                                <SolidColorBrush x:Key="ProgressBarIndeterminateForeground" Color="White" />
+                                <SolidColorBrush x:Key="ProgressBarBackground" Color="#33FFFFFF" />
+                            </ProgressBar.Resources>
+                        </ProgressBar>
                     </StackPanel>
-                </Border>
+                </Grid>
             </Grid>
         </Border>
     </Grid>
