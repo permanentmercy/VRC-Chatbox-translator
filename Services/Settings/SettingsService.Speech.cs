@@ -281,10 +281,6 @@ public partial class SettingsService
             {
                 h = h.Substring(cutIdx + 1).TrimStart(' ', '\t', '，', ',', '、', '；', ';', '。', '！', '？', '…', '.', '!', '?');
             }
-            else if (cutIdx == h.Length - 1)
-            {
-                h = string.Empty;
-            }
             cleanHypothesis = h;
         }
 

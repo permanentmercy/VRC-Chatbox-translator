@@ -303,18 +303,16 @@ public partial class LiveCaptionsService : IDisposable
                     }
                 }
 
-                // 剩余部分不包含任何终结符，仅作为当前正在说的单句假说
+                // 剩余部分不包含中间已确定的句子边界，作为当前正在连贯表达的单句假说
                 if (!string.IsNullOrWhiteSpace(currentNewText))
                 {
                     SpeechHypothesis?.Invoke(currentNewText);
 
-                    // 自然说话停顿判定：
-                    // 1. 正常停顿超时提升至 1600ms（给予充分的换气与连贯思考时间）且有效字数 >= 3；
-                    // 2. 极短碎片（1-2个字）需静默超过 2500ms 彻底无后续语音才定稿，彻底杜绝单字成句
+                    // 智能语义完整性与停顿定稿判定：
+                    // 英语环境下深度感知悬空词（连词/介词/助动词）与标点闭合，杜绝腰斩从句与把思考断成碎片；
+                    // 中文环境下保持快速响应与平滑切分。
                     long elapsed = idleTimer.ElapsedMilliseconds;
-                    int meaningfulLen = GetMeaningfulContentLength(currentNewText);
-
-                    if ((elapsed >= 1600 && meaningfulLen >= 3) || (elapsed >= 2500 && meaningfulLen >= 1))
+                    if (ShouldCommitHypothesis(currentNewText, elapsed))
                     {
                         string sentenceToCommit = currentNewText.Trim();
                         if (ContainsMeaningfulContent(sentenceToCommit))
@@ -410,6 +408,69 @@ public partial class LiveCaptionsService : IDisposable
     {
         "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.", "e.g.", "i.e.", "st.", "inc.", "ltd.", "co.", "corp.", "approx.", "dept.", "est.", "fig.", "jan.", "feb.", "mar.", "apr.", "jun.", "jul.", "aug.", "sep.", "sept.", "oct.", "nov.", "dec.", "a.m.", "p.m.", "am.", "pm.", "u.s.", "u.k.", "e.u."
     };
+
+    private static readonly HashSet<string> EnglishDanglingWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // 连词与引导词
+        "and", "or", "but", "nor", "so", "yet", "because", "although", "though", "even",
+        "if", "unless", "when", "whenever", "while", "where", "whereas", "since", "as",
+        "that", "which", "who", "whom", "whose", "whether", "what", "whatever", "how",
+        // 介词
+        "to", "for", "with", "about", "of", "in", "on", "at", "from", "by", "into",
+        "onto", "upon", "through", "between", "among", "without", "like", "than", "towards",
+        // 助动词与系动词
+        "is", "are", "am", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did",
+        "will", "would", "shall", "should", "can", "could", "may", "might", "must",
+        // 冠词与代词修饰
+        "the", "a", "an", "this", "that", "these", "those", "my", "your", "his", "her", "its", "our", "their"
+    };
+
+    private static readonly HashSet<string> EnglishCommonShortResponses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "yes", "no", "yeah", "yep", "nope", "okay", "ok", "sure", "thanks", "thank you",
+        "sorry", "hello", "hi", "hey", "goodbye", "bye", "bye bye", "got it", "all right",
+        "alright", "of course", "never mind", "good morning", "good night", "see you"
+    };
+
+    private static List<string> ExtractEnglishWords(string text)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(text)) return list;
+
+        var matches = System.Text.RegularExpressions.Regex.Matches(text, @"\b[a-zA-Z0-9'-]+\b");
+        foreach (System.Text.RegularExpressions.Match m in matches)
+        {
+            list.Add(m.Value);
+        }
+        return list;
+    }
+
+    private static bool EndsWithDanglingEnglishWord(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string trimmed = text.TrimEnd(' ', '\t', '，', ',', '、', '；', ';', '-', '—');
+        var words = ExtractEnglishWords(trimmed);
+        if (words.Count == 0) return false;
+
+        string lastWord = words[^1];
+        return EnglishDanglingWords.Contains(lastWord);
+    }
+
+    private static bool EndsWithTerminalPunctuation(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string trimmed = text.TrimEnd();
+        if (trimmed.Length == 0) return false;
+        char last = trimmed[^1];
+        if (last == '"' || last == '\'' || last == '”' || last == '’' || last == ')' || last == ']')
+        {
+            trimmed = trimmed.Substring(0, trimmed.Length - 1).TrimEnd();
+            if (trimmed.Length == 0) return false;
+            last = trimmed[^1];
+        }
+        return last == '。' || last == '！' || last == '？' || last == '…' || last == '.' || last == '!' || last == '?';
+    }
 
     private string ExtractNewText(string fullText)
     {
@@ -557,39 +618,78 @@ public partial class LiveCaptionsService : IDisposable
                     continue;
                 }
 
-                // 2. 西文环境下句号必须后接空白字符、引号、括号或处于文本末尾，防止诸如 github.com, v1.0.0, node.js 误断句
-                if (c == '.' && !hasCjk)
+                if (!hasCjk)
                 {
-                    bool isAtEnd = (i + 1 == text.Length);
-                    bool followedBySpaceOrQuote = !isAtEnd && (char.IsWhiteSpace(text[i + 1]) ||
-                                                              text[i + 1] == '"' || text[i + 1] == '\'' ||
-                                                              text[i + 1] == '”' || text[i + 1] == '’' ||
-                                                              text[i + 1] == ')' || text[i + 1] == ']');
-                    if (!isAtEnd && !followedBySpaceOrQuote)
+                    // 2. 西文环境下：若终结符处于文本末尾（后面没有任何有效字母或数字），
+                    // 绝不在流式接收中毫秒级秒切！交给 ShouldCommitHypothesis 在静默 750ms 后平滑定稿，
+                    // 从而彻底防止说话人还在连贯说话时被半途吐出的临时点号腰斩。
+                    bool isTrailing = true;
+                    for (int k = i + 1; k < text.Length; k++)
+                    {
+                        if (char.IsLetterOrDigit(text[k]))
+                        {
+                            isTrailing = false;
+                            break;
+                        }
+                    }
+                    if (isTrailing)
                     {
                         continue;
                     }
 
-                    // 3. 常见英语缩写词保护：提取该句号结尾的词，如 Mr., Dr., etc., vs., e.g.
-                    int wordStart = i - 1;
-                    while (wordStart > 0 && !char.IsWhiteSpace(text[wordStart - 1]) && text[wordStart - 1] != '(' && text[wordStart - 1] != '[')
-                    {
-                        wordStart--;
-                    }
-                    string token = text.Substring(wordStart, i - wordStart + 1).Trim();
-                    if (EnglishAbbreviations.Contains(token))
+                    // 3. 终结符在文本中间：检查其后是否由空格、换行或引号隔开
+                    bool followedBySpaceOrQuote = char.IsWhiteSpace(text[i + 1]) ||
+                                                  text[i + 1] == '"' || text[i + 1] == '\'' ||
+                                                  text[i + 1] == '”' || text[i + 1] == '’' ||
+                                                  text[i + 1] == ')' || text[i + 1] == ']';
+                    if (!followedBySpaceOrQuote)
                     {
                         continue;
                     }
 
-                    // 4. 单个大写字母缩写保护：如 A. 或 John F. Kennedy
-                    if (token.Length == 2 && char.IsUpper(token[0]))
+                    // 4. 常见英语缩写词保护：提取该句号结尾的词，如 Mr., Dr., etc., vs., e.g.
+                    if (c == '.')
                     {
-                        continue;
+                        int wordStart = i - 1;
+                        while (wordStart > 0 && !char.IsWhiteSpace(text[wordStart - 1]) && text[wordStart - 1] != '(' && text[wordStart - 1] != '[')
+                        {
+                            wordStart--;
+                        }
+                        string token = text.Substring(wordStart, i - wordStart + 1).Trim();
+                        if (EnglishAbbreviations.Contains(token))
+                        {
+                            continue;
+                        }
+
+                        // 单个大写字母缩写保护：如 A. 或 John F. Kennedy
+                        if (token.Length == 2 && char.IsUpper(token[0]))
+                        {
+                            continue;
+                        }
+                    }
+
+                    // 5. 核心：西文确定性新句判定（Strong Boundary Check）
+                    // 终结符之后跳过空格和引号，下一个词的第一个字母必须是大写字母（或数字/引号）！
+                    // 若下一个字母是小写字母（如 ASR 误打点号），绝不拆分！
+                    int nextCharIdx = i + 1;
+                    while (nextCharIdx < text.Length && (char.IsWhiteSpace(text[nextCharIdx]) ||
+                                                         text[nextCharIdx] == '"' || text[nextCharIdx] == '\'' ||
+                                                         text[nextCharIdx] == '“' || text[nextCharIdx] == '‘'))
+                    {
+                        nextCharIdx++;
+                    }
+
+                    if (nextCharIdx < text.Length)
+                    {
+                        char nextC = text[nextCharIdx];
+                        if (char.IsLetter(nextC) && !char.IsUpper(nextC))
+                        {
+                            continue;
+                        }
                     }
                 }
 
-                // 5. 最小有效长度保护：终结符前必须至少有 2 个有效字符（中文 2 字，英文 3 字母）
+                // 6. 最小有效长度保护：终结符前必须至少有有效内容（中文 2 字，英文至少 3 字符）
                 string prefix = text.Substring(0, i);
                 int minChars = hasCjk ? 2 : 3;
                 if (GetMeaningfulContentLength(prefix) < minChars)
@@ -609,10 +709,10 @@ public partial class LiveCaptionsService : IDisposable
                 return endIdx;
             }
 
-            // 6. 超长句逗号兜底保护：
-            // 中文单句达到 40 个字符遇逗号可切分；
-            // 英文单句 40 字符仅约 6-8 个词（绝不能在逗号切断，否则会导致半句碎片和翻译混乱），仅在超长段落 (>=110 字符) 且遇逗号时才兜底切分
-            int commaThreshold = hasCjk ? 40 : 110;
+            // 7. 超长句逗号兜底保护：
+            // 中文单句达到 40 个字符遇逗号切分；
+            // 英文单句绝不在正常逗号处切断（彻底杜绝腰斩从句与复合句），仅当段落达到 220 字符极大值且遇逗号时才兜底切分
+            int commaThreshold = hasCjk ? 40 : 220;
             if (IsCommaDelimiter(c) && i >= commaThreshold)
             {
                 int endIdx = i;
@@ -625,6 +725,77 @@ public partial class LiveCaptionsService : IDisposable
         }
 
         return -1;
+    }
+
+    private static bool ShouldCommitHypothesis(string text, long elapsedMs)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        bool hasCjk = ContainsCjk(text);
+
+        if (hasCjk)
+        {
+            // 中文/CJK 环境：
+            // 1. 若末尾带终结符（。！？…），只要静默 >= 600ms 立即定稿；
+            // 2. 普通无终结符内容，有效字数 >= 3 且静默 >= 1600ms 定稿；
+            // 3. 极短字（1-2字）需静默 >= 2500ms 彻底无后续才定稿
+            if (EndsWithTerminalPunctuation(text))
+            {
+                return elapsedMs >= 600;
+            }
+
+            int cjkLen = GetMeaningfulContentLength(text);
+            if (cjkLen >= 3 && elapsedMs >= 1600) return true;
+            if (cjkLen >= 1 && elapsedMs >= 2500) return true;
+            return false;
+        }
+        else
+        {
+            // 英文/西文环境：
+            // 1. 若末尾带有句号/感叹号/问号（且不是缩写词结尾），说明本句已完整打出标点：
+            //    仅需静默停顿 >= 750ms（既不会抢在连贯说话前腰斩，又保证说完后极速上屏发送）
+            if (EndsWithTerminalPunctuation(text))
+            {
+                string trimmed = text.TrimEnd(' ', '\t', '"', '\'', '”', '’', ')', ']');
+                var words = ExtractEnglishWords(trimmed);
+                if (words.Count > 0 && EnglishAbbreviations.Contains(words[^1] + "."))
+                {
+                    // 末尾是缩写词，不作为已闭合的句子
+                }
+                else
+                {
+                    return elapsedMs >= 750;
+                }
+            }
+
+            var englishWords = ExtractEnglishWords(text);
+            int wordCount = englishWords.Count;
+            if (wordCount == 0) return false;
+
+            // 2. 检查末尾是否处于悬空未完成态（以 and, but, because, to, for, with, is, are 等结尾，或以逗号结尾）
+            bool isDangling = EndsWithDanglingEnglishWord(text) || text.TrimEnd().EndsWith(',') || text.TrimEnd().EndsWith(';');
+            if (isDangling)
+            {
+                // 悬空状态表明说话人正在连贯组织后续词汇，给予充足等待时间（>= 3200ms），绝不随意腰斩！
+                return elapsedMs >= 3200;
+            }
+
+            // 3. 极短回复词（1~2词）：
+            //    如果是常见独立短语（Yes, No, Thank you, All right, Sure 等），静默 >= 1300ms 即可定稿；
+            //    如果是普通零散词，需要静默 >= 2800ms 彻底无后续才定稿，避免把句首单词提前发出去
+            if (wordCount <= 2)
+            {
+                string cleanPhrase = string.Join(" ", englishWords).ToLowerInvariant();
+                if (EnglishCommonShortResponses.Contains(cleanPhrase) || (wordCount == 1 && EnglishCommonShortResponses.Contains(englishWords[0])))
+                {
+                    return elapsedMs >= 1300;
+                }
+                return elapsedMs >= 2800;
+            }
+
+            // 4. 正常多词表达（>= 3个单词且不悬空）：
+            //    用户说完一段语义相对完整的语句，静默 >= 1900ms 定稿提交
+            return elapsedMs >= 1900;
+        }
     }
 
     private static int GetMeaningfulContentLength(string text)
@@ -693,6 +864,10 @@ public partial class LiveCaptionsService : IDisposable
         }
 
         string cleaned = sb.ToString().Trim();
+
+        // 确保西文标点（, . ! ? ; :）后面若直接紧跟西文字母，自动补充一个空格，保障词级解析与大写检测精准
+        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"([a-zA-Z0-9])([,.;:!?])([a-zA-Z])", "$1$2 $3");
+
         while (cleaned.Contains("  "))
         {
             cleaned = cleaned.Replace("  ", " ");
