@@ -1,6 +1,7 @@
 #pragma warning disable CA1416
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -25,6 +26,7 @@ public sealed class TtsService : IDisposable
     private Process? _serverProcess;
     private CancellationTokenSource? _activePlaybackCts;
     private readonly object _playbackLock = new();
+    private readonly SemaphoreSlim _playbackQueueLock = new(1, 1);
 
     public TtsServerState State { get; private set; } = TtsServerState.Stopped;
     public string StatusMessage { get; private set; } = "TTS 引擎已停止";
@@ -178,7 +180,7 @@ public sealed class TtsService : IDisposable
             var psi = new ProcessStartInfo
             {
                 FileName = cfg.TtsPythonExePath,
-                Arguments = $"\"{cfg.TtsServerScriptPath}\" --port {cfg.TtsServerPort} --model \"{cfg.TtsModelName}\" --low-vram",
+                Arguments = $"\"{cfg.TtsServerScriptPath}\" --port {cfg.TtsServerPort} --model \"{cfg.TtsModelName}\"",
                 WorkingDirectory = workDir,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -251,10 +253,11 @@ public sealed class TtsService : IDisposable
     }
 
     /// <summary>
-    /// 停止托管的 Python 后台进程
+    /// 停止托管的 Python 后台进程，并清理占用 TTS 端口的残留进程
     /// </summary>
     public void StopManagedServer()
     {
+        // 1. 先杀托管进程（如果有）
         var proc = _serverProcess;
         _serverProcess = null;
 
@@ -267,6 +270,7 @@ public sealed class TtsService : IDisposable
                 if (!hasExited)
                 {
                     proc.Kill(entireProcessTree: true);
+                    try { proc.WaitForExit(2000); } catch { }
                 }
             }
             catch { }
@@ -275,7 +279,71 @@ public sealed class TtsService : IDisposable
                 try { proc.Dispose(); } catch { }
             }
         }
+
+        // 2. 兜底：通过端口号查找并杀死占用 TTS 服务端口的所有残留进程
+        // 解决以下场景：StartManagedServerAsync 探测到已有服务直接复用但未保存 _serverProcess
+        try
+        {
+            int port = SettingsService.Instance.Config.TtsServerPort;
+            KillProcessesByPort(port);
+        }
+        catch { }
+
         SetState(TtsServerState.Stopped, "TTS 引擎已停止");
+    }
+
+    /// <summary>
+    /// 通过 netstat 查找占用指定端口的进程并终止
+    /// </summary>
+    private static void KillProcessesByPort(int port)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c netstat -ano | findstr :{port} | findstr LISTENING",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true
+            };
+            using var netstat = Process.Start(psi);
+            if (netstat == null) return;
+
+            string output = netstat.StandardOutput.ReadToEnd();
+            netstat.WaitForExit(3000);
+
+            // 从 netstat 输出中提取 PID（每行最后一个数字字段）
+            var pids = new HashSet<int>();
+            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string trimmed = line.Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
+                // netstat -ano 格式: TCP 127.0.0.1:9880 0.0.0.0:0 LISTENING 12345
+                string[] parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length > 0 && int.TryParse(parts[^1], out int pid) && pid > 0)
+                {
+                    pids.Add(pid);
+                }
+            }
+
+            int currentPid = Environment.ProcessId;
+            foreach (int pid in pids)
+            {
+                if (pid == currentPid) continue; // 绝不杀自身
+                try
+                {
+                    using var p = Process.GetProcessById(pid);
+                    if (!p.HasExited)
+                    {
+                        p.Kill(entireProcessTree: true);
+                        p.WaitForExit(2000);
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
     }
 
     /// <summary>
@@ -427,8 +495,14 @@ public sealed class TtsService : IDisposable
     {
         if (clauses == null || clauses.Count == 0) return false;
 
-        // 停止上一次未完成的推流
-        StopPlayback();
+        try
+        {
+            await _playbackQueueLock.WaitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
 
         CancellationTokenSource playbackCts;
         lock (_playbackLock)
@@ -448,9 +522,9 @@ public sealed class TtsService : IDisposable
                 var (micDevice, monDevice, isSameDevice) = ResolveDevices(enumerator, virtualMicDeviceId, monitorDeviceId, enableMonitor);
 
                 var inputFormat = new WaveFormat(24000, 16, 1);
-                BufferedWaveProvider? bufferSame = null;
-                BufferedWaveProvider? bufferMic = null;
-                BufferedWaveProvider? bufferMon = null;
+                SpeechQueueWaveProvider? bufferSame = null;
+                SpeechQueueWaveProvider? bufferMic = null;
+                SpeechQueueWaveProvider? bufferMon = null;
 
                 WasapiOut? playerSame = null;
                 WasapiOut? playerMic = null;
@@ -463,7 +537,7 @@ public sealed class TtsService : IDisposable
                         float maxVol = Math.Max(micVolume, monitorVolume);
                         if (maxVol > 0.001f && micDevice != null)
                         {
-                            bufferSame = new BufferedWaveProvider(inputFormat) { DiscardOnBufferOverflow = true, ReadFully = true };
+                            bufferSame = new SpeechQueueWaveProvider(inputFormat);
                             using var audioClient = micDevice.CreateAudioClient();
                             var mixFormat = audioClient.MixFormat;
                             ISampleProvider sampleProvider = bufferSame.ToSampleProvider();
@@ -484,7 +558,7 @@ public sealed class TtsService : IDisposable
                     {
                         if (micDevice != null && micVolume > 0.001f)
                         {
-                            bufferMic = new BufferedWaveProvider(inputFormat) { DiscardOnBufferOverflow = true, ReadFully = true };
+                            bufferMic = new SpeechQueueWaveProvider(inputFormat);
                             using var audioClient = micDevice.CreateAudioClient();
                             var mixFormat = audioClient.MixFormat;
                             ISampleProvider sampleProvider = bufferMic.ToSampleProvider();
@@ -503,7 +577,7 @@ public sealed class TtsService : IDisposable
 
                         if (enableMonitor && monDevice != null && monitorVolume > 0.001f)
                         {
-                            bufferMon = new BufferedWaveProvider(inputFormat) { DiscardOnBufferOverflow = true, ReadFully = true };
+                            bufferMon = new SpeechQueueWaveProvider(inputFormat);
                             using var audioClient = monDevice.CreateAudioClient();
                             var mixFormat = audioClient.MixFormat;
                             ISampleProvider sampleProvider = bufferMon.ToSampleProvider();
@@ -523,58 +597,102 @@ public sealed class TtsService : IDisposable
 
                     bool startedPlayback = false;
                     int total = clauses.Count;
+                    var audioQueue = System.Threading.Channels.Channel.CreateUnbounded<(int index, byte[] pcm, double duration)>();
+                    byte[] silencePad = new byte[2400]; // 50ms 句间自然呼吸停顿 (24000 * 2 * 0.05 = 2400 bytes)
 
-                    for (int i = 0; i < total; i++)
+                    // ── 生产者任务：GPU 连续高速推理，不受音频播放速度拖累 ──
+                    var producerTask = Task.Run(async () =>
                     {
-                        if (token.IsCancellationRequested) break;
-
-                        string clause = clauses[i];
-                        onClauseSynthesized?.Invoke(i, total);
-
-                        var res = await SynthesizeAsync(clause, token);
-                        if (!res.Success || res.AudioBytes == null || res.AudioBytes.Length == 0)
+                        try
                         {
-                            continue;
-                        }
-
-                        // 解析 24kHz 单声道 WAV 数据
-                        using (var ms = new MemoryStream(res.AudioBytes))
-                        using (var reader = new WaveFileReader(ms))
-                        {
-                            byte[] pcm = new byte[reader.Length];
-                            int read = reader.Read(pcm, 0, pcm.Length);
-                            if (read > 0)
+                            for (int i = 0; i < total; i++)
                             {
+                                if (token.IsCancellationRequested) break;
+                                onClauseSynthesized?.Invoke(i, total);
+
+                                var res = await SynthesizeAsync(clauses[i], token);
+                                if (token.IsCancellationRequested) break;
+
+                                if (res.Success && res.AudioBytes != null && res.AudioBytes.Length > 0)
+                                {
+                                    using var ms = new MemoryStream(res.AudioBytes);
+                                    using var reader = new WaveFileReader(ms);
+                                    byte[] pcm = new byte[reader.Length];
+                                    int read = reader.Read(pcm, 0, pcm.Length);
+                                    if (read > 0)
+                                    {
+                                        byte[] actual = (read == pcm.Length) ? pcm : pcm[..read];
+                                        await audioQueue.Writer.WriteAsync((i, actual, res.DurationSeconds), token);
+                                    }
+                                }
+                            }
+                        }
+                        catch (OperationCanceledException) { }
+                        catch (Exception ex)
+                        {
+                            LogOccurred?.Invoke($"分句合成生产者异常: {ex.Message}");
+                        }
+                        finally
+                        {
+                            audioQueue.Writer.TryComplete();
+                        }
+                    }, token);
+
+                    // ── 消费者任务：从队列按顺序取音频，无缝追加到 10 分钟超大缓冲区播放 ──
+                    try
+                    {
+                        while (await audioQueue.Reader.WaitToReadAsync(token))
+                        {
+                            while (audioQueue.Reader.TryRead(out var item))
+                            {
+                                if (token.IsCancellationRequested) break;
+
+                                // 句间平滑微停顿（首句之后追加，防音素硬粘连）
+                                if (startedPlayback)
+                                {
+                                    if (isSameDevice && bufferSame != null) bufferSame.AddSamples(silencePad, 0, silencePad.Length);
+                                    else
+                                    {
+                                        if (bufferMic != null) bufferMic.AddSamples(silencePad, 0, silencePad.Length);
+                                        if (bufferMon != null) bufferMon.AddSamples(silencePad, 0, silencePad.Length);
+                                    }
+                                }
+
+                                // 送入无界音频队列（支持任意长句，绝不截断、绝不溢出、绝不死锁）
                                 if (isSameDevice && bufferSame != null)
                                 {
-                                    bufferSame.AddSamples(pcm, 0, read);
+                                    bufferSame.AddSamples(item.pcm, 0, item.pcm.Length);
                                 }
                                 else
                                 {
-                                    if (bufferMic != null) bufferMic.AddSamples(pcm, 0, read);
-                                    if (bufferMon != null) bufferMon.AddSamples(pcm, 0, read);
+                                    if (bufferMic != null) bufferMic.AddSamples(item.pcm, 0, item.pcm.Length);
+                                    if (bufferMon != null) bufferMon.AddSamples(item.pcm, 0, item.pcm.Length);
                                 }
-                            }
-                        }
 
-                        // 【首句即刻开播】：第 1 个分句一生成完毕，立刻唤醒声卡推流！
-                        if (!startedPlayback)
-                        {
-                            startedPlayback = true;
-                            if (isSameDevice)
-                            {
-                                playerSame?.Play();
-                            }
-                            else
-                            {
-                                playerMic?.Play();
-                                playerMon?.Play();
+                                // 首句即刻唤醒声卡推流开播
+                                if (!startedPlayback)
+                                {
+                                    startedPlayback = true;
+                                    if (isSameDevice)
+                                    {
+                                        playerSame?.Play();
+                                    }
+                                    else
+                                    {
+                                        playerMic?.Play();
+                                        playerMon?.Play();
+                                    }
+                                }
+
+                                onClausePlaying?.Invoke(item.index + 1, total);
                             }
                         }
-                        onClausePlaying?.Invoke(i + 1, total);
                     }
+                    catch (OperationCanceledException) { }
 
-                    // 句子合成全部送入后，等待缓冲区全部播放完毕
+                    await producerTask;
+
+                    // 句子全部合成送入后，等待缓冲区全部音频彻底播放完毕
                     if (startedPlayback)
                     {
                         while (!token.IsCancellationRequested)
@@ -592,9 +710,9 @@ public sealed class TtsService : IDisposable
                 }
                 finally
                 {
-                    try { playerSame?.Stop(); playerSame?.Dispose(); } catch { }
-                    try { playerMic?.Stop(); playerMic?.Dispose(); } catch { }
-                    try { playerMon?.Stop(); playerMon?.Dispose(); } catch { }
+                    try { playerSame?.Stop(); playerSame?.Dispose(); bufferSame?.ClearBuffer(); } catch { }
+                    try { playerMic?.Stop(); playerMic?.Dispose(); bufferMic?.ClearBuffer(); } catch { }
+                    try { playerMon?.Stop(); playerMon?.Dispose(); bufferMon?.ClearBuffer(); } catch { }
                 }
             }, token);
         }
@@ -610,6 +728,7 @@ public sealed class TtsService : IDisposable
         finally
         {
             PlaybackActiveStateChanged?.Invoke(false);
+            _playbackQueueLock.Release();
         }
     }
 
@@ -802,4 +921,99 @@ internal sealed class SoftLimiterSampleProvider : ISampleProvider
         return samplesRead;
     }
 }
+
+/// <summary>
+/// 高性能无界流式音频队列 Provider，彻底解除 NAudio 5 秒缓冲限制，支持任意超长子句与多句连续无缝播放
+/// </summary>
+internal sealed class SpeechQueueWaveProvider : IWaveProvider
+{
+    private readonly WaveFormat _waveFormat;
+    private readonly ConcurrentQueue<byte[]> _queue = new();
+    private byte[]? _currentChunk;
+    private int _currentOffset;
+    private readonly object _lock = new();
+
+    public SpeechQueueWaveProvider(WaveFormat waveFormat)
+    {
+        _waveFormat = waveFormat;
+    }
+
+    public WaveFormat WaveFormat => _waveFormat;
+
+    public void AddSamples(byte[] buffer, int offset, int count)
+    {
+        if (count <= 0) return;
+        byte[] copy = new byte[count];
+        Buffer.BlockCopy(buffer, offset, copy, 0, count);
+        _queue.Enqueue(copy);
+    }
+
+    public int BufferedBytes
+    {
+        get
+        {
+            lock (_lock)
+            {
+                int total = (_currentChunk != null) ? (_currentChunk.Length - _currentOffset) : 0;
+                foreach (var chunk in _queue)
+                {
+                    total += chunk.Length;
+                }
+                return total;
+            }
+        }
+    }
+
+    public void ClearBuffer()
+    {
+        lock (_lock)
+        {
+            _currentChunk = null;
+            _currentOffset = 0;
+            while (_queue.TryDequeue(out _)) { }
+        }
+    }
+
+    public int Read(Span<byte> buffer)
+    {
+        int bytesRead = 0;
+        int count = buffer.Length;
+        lock (_lock)
+        {
+            while (bytesRead < count)
+            {
+                if (_currentChunk == null || _currentOffset >= _currentChunk.Length)
+                {
+                    if (!_queue.TryDequeue(out _currentChunk))
+                    {
+                        _currentChunk = null;
+                        _currentOffset = 0;
+                        break;
+                    }
+                    _currentOffset = 0;
+                }
+
+                int toCopy = Math.Min(count - bytesRead, _currentChunk.Length - _currentOffset);
+                _currentChunk.AsSpan(_currentOffset, toCopy).CopyTo(buffer.Slice(bytesRead, toCopy));
+                _currentOffset += toCopy;
+                bytesRead += toCopy;
+            }
+        }
+
+        // 保持输出填满（静音补齐），防止 WASAPI 出现硬件欠载（Underrun）爆音或断流
+        if (bytesRead < count)
+        {
+            buffer.Slice(bytesRead).Clear();
+            bytesRead = count;
+        }
+
+        return bytesRead;
+    }
+
+    public int Read(byte[] buffer, int offset, int count)
+    {
+        return Read(buffer.AsSpan(offset, count));
+    }
+}
+
 

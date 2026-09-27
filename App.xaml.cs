@@ -46,57 +46,32 @@ public partial class App : Application
 
         if (!createdNew)
         {
+            // 已有实例正在运行，尝试唤醒其窗口然后退出自身
             try
             {
-                var currentPid = Environment.ProcessId;
-                var otherProcesses = System.Diagnostics.Process.GetProcessesByName("VrcChatboxDemo")
-                    .Where(p => p.Id != currentPid)
-                    .ToList();
+                // 尝试通过 FindWindow 找到已有实例的主窗口或沉浸式窗口
+                IntPtr existingMain = FindWindow(null, "Vrc Chatbox By Mercy's BUG");
+                IntPtr existingOverlay = FindWindow(null, "Vrc Chatbox Overlay");
 
-                if (otherProcesses.Count > 0)
+                if (existingMain != IntPtr.Zero)
                 {
-                    bool signaledExisting = false;
-                    foreach (var proc in otherProcesses)
-                    {
-                        try
-                        {
-                            if (!proc.HasExited && proc.MainWindowHandle != IntPtr.Zero)
-                            {
-                                PostMessage(proc.MainWindowHandle, WM_WAKE_UP_APP, IntPtr.Zero, IntPtr.Zero);
-                                ShowWindow(proc.MainWindowHandle, 9 /* SW_RESTORE */);
-                                ShowWindow(proc.MainWindowHandle, 5 /* SW_SHOW */);
-                                SetForegroundWindow(proc.MainWindowHandle);
-                                signaledExisting = true;
-                            }
-                        }
-                        catch { }
-                    }
-
-                    // 广播唤醒已有实例（若已有实例处于托盘或沉浸模式）
-                    PostMessage((IntPtr)HWND_BROADCAST, WM_WAKE_UP_APP, IntPtr.Zero, IntPtr.Zero);
-
-                    if (!signaledExisting)
-                    {
-                        // 发现无活动窗口的孤儿进程或后台残留，强制终止清理以便新实例正常启动
-                        foreach (var proc in otherProcesses)
-                        {
-                            try
-                            {
-                                proc.Kill();
-                                proc.WaitForExit(500);
-                            }
-                            catch { }
-                        }
-                    }
-                    else
-                    {
-                        // 成功唤醒已有实例，退出当前重复启动的进程
-                        Environment.Exit(0);
-                        return;
-                    }
+                    ShowWindow(existingMain, 9 /* SW_RESTORE */);
+                    ShowWindow(existingMain, 5 /* SW_SHOW */);
+                    SetForegroundWindow(existingMain);
                 }
+                else if (existingOverlay != IntPtr.Zero)
+                {
+                    SetForegroundWindow(existingOverlay);
+                }
+
+                // 广播唤醒消息：确保已有实例即使在托盘/沉浸模式下也能收到唤醒通知
+                PostMessage((IntPtr)HWND_BROADCAST, WM_WAKE_UP_APP, IntPtr.Zero, IntPtr.Zero);
             }
             catch { }
+
+            // 无论是否成功唤醒，重复实例必须退出，绝不强杀已有进程
+            Environment.Exit(0);
+            return;
         }
 
         AppDomain.CurrentDomain.ProcessExit += (s, e) => ReleaseSingleInstanceMutex();

@@ -677,28 +677,45 @@ public partial class SettingsService
     }
 
     /// <summary>
-    /// 智能语义断句算法：将整段长文本切分为呼吸停顿自然的子句，并自适应补齐句号，防止模型自回归尾音发散
-    /// 1. 先按显式标点与换行切分；
-    /// 2. 对无标点或单句过长（>12-14字）的长段落，在空格、常见逻辑连接词（然后、但是、而且等）或适度字数处进行语义细分；
-    /// 3. 合理控制颗粒度，使首句能够极速（~200-300ms）出声，后续分句边播放边后台生成无缝衔接。
+    /// 智能语义断句算法 v2：将整段长文本切分为自然语音子句
+    /// 核心原则：
+    /// 1. 仅在句子级别边界（。！？.!?；;\n）断句，逗号由 TTS 模型自然处理停顿
+    /// 2. 中文内嵌英文单词不拆分（如"这个program很好"不会在 program 处断开）
+    /// 3. 超长句（>35字符）在逗号/连接词处二次细分
+    /// 4. 过短片段（≤3字符）粘合到相邻句子，避免极短 TTS 请求产生不自然停顿
     /// </summary>
     public static List<string> SplitIntoSpeechClauses(string input)
     {
-        var rawClauses = new List<string>();
-        if (string.IsNullOrWhiteSpace(input)) return rawClauses;
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(input)) return result;
 
-        // 1. 根据显式标点与换行切分
-        char[] delims = new[] { '。', '！', '？', '；', '，', '、', '.', '!', '?', ';', ',', '\n', '\r', '…', '~' };
+        // ── 第 1 步：仅在句子终止符（非逗号）处切分 ──
+        // 句子终止符：。！？.!?；;\n\r…
+        // 逗号（，,）和顿号（、）不作为一级切分点——它们在 TTS 模型中自然产生停顿
+        var rawSentences = new List<string>();
+        char[] sentenceEnders = { '。', '！', '？', '；', '.', '!', '?', ';', '\n', '\r' };
         int start = 0;
+
         for (int i = 0; i < input.Length; i++)
         {
             char c = input[i];
-            if (Array.IndexOf(delims, c) >= 0)
+            if (Array.IndexOf(sentenceEnders, c) >= 0)
             {
-                string clause = input.Substring(start, i - start + 1).Trim();
-                if (!string.IsNullOrWhiteSpace(clause))
+                // 特殊处理英文句号：如果紧跟字母或数字（如 "v1.5" "Dr."），不在此断句
+                if (c == '.')
                 {
-                    rawClauses.Add(clause);
+                    bool leftIsLatinOrDigit = i > 0 && (char.IsLetterOrDigit(input[i - 1]));
+                    bool rightIsLatinOrDigit = i + 1 < input.Length && (char.IsLetterOrDigit(input[i + 1]));
+                    if (leftIsLatinOrDigit && rightIsLatinOrDigit)
+                    {
+                        continue; // "v1.5" 中的点号，跳过不切
+                    }
+                }
+
+                string seg = input.Substring(start, i - start + 1).Trim();
+                if (!string.IsNullOrWhiteSpace(seg))
+                {
+                    rawSentences.Add(seg);
                 }
                 start = i + 1;
             }
@@ -708,84 +725,97 @@ public partial class SettingsService
             string tail = input.Substring(start).Trim();
             if (!string.IsNullOrWhiteSpace(tail))
             {
-                rawClauses.Add(tail);
+                rawSentences.Add(tail);
             }
         }
 
-        if (rawClauses.Count == 0)
+        if (rawSentences.Count == 0)
         {
-            rawClauses.Add(input);
+            rawSentences.Add(input.Trim());
         }
 
-        // 2. 二次智能细分：若某个分句过长（超过 14 个字符且无断点），按空格、常见转折/并列连词或自然字数切分
+        // ── 第 2 步：对超长句子（>35字符）二次细分 ──
+        // 此时才使用逗号、顿号和中文连接词作为切分点
         var subDivided = new List<string>();
-        string[] connectors = new[] { "然后", "但是", "而且", "所以", "并且", "因为", "如果", "虽然", "不过", "以及", "或者", "就是", "还有", "另外", "同时", "接着", "之后" };
+        char[] commaDelims = { '，', ',', '、' };
+        string[] connectors = { "然后", "但是", "而且", "所以", "并且", "因为", "如果", "虽然", "不过", "以及", "或者", "就是", "还有", "另外", "同时", "接着", "之后" };
 
-        foreach (var clause in rawClauses)
+        foreach (var sentence in rawSentences)
         {
-            string trimmed = clause.Trim();
-            if (trimmed.Length <= 14)
+            if (sentence.Length <= 35)
             {
-                subDivided.Add(trimmed);
+                subDivided.Add(sentence);
                 continue;
             }
 
-            // 针对超长句进行逐段切割
-            string remaining = trimmed;
-            while (remaining.Length > 14)
+            // 在逗号和连接词处细分超长句
+            var parts = new List<string>();
+            int segStart = 0;
+            for (int i = 0; i < sentence.Length; i++)
             {
-                int splitIdx = -1;
+                bool shouldSplit = false;
+                int splitLen = 1;
 
-                // 2.1 尝试寻找空格
-                int spaceIdx = remaining.IndexOf(' ', 6);
-                if (spaceIdx > 0 && spaceIdx <= 14)
+                // 检查逗号/顿号
+                if (Array.IndexOf(commaDelims, sentence[i]) >= 0)
                 {
-                    splitIdx = spaceIdx;
+                    // 只有当前段足够长（>8字符）才在逗号处切
+                    if (i - segStart >= 8)
+                    {
+                        shouldSplit = true;
+                    }
                 }
 
-                // 2.2 尝试寻找中文逻辑连接词
-                if (splitIdx < 0)
+                // 检查中文连接词
+                if (!shouldSplit && i - segStart >= 8)
                 {
                     foreach (var conn in connectors)
                     {
-                        int cIdx = remaining.IndexOf(conn, 5, StringComparison.Ordinal);
-                        if (cIdx >= 5 && cIdx <= 14)
+                        if (i + conn.Length <= sentence.Length &&
+                            sentence.AsSpan(i, conn.Length).SequenceEqual(conn.AsSpan()))
                         {
-                            splitIdx = cIdx;
+                            shouldSplit = true;
+                            splitLen = 0; // 连接词留在下一段开头
                             break;
                         }
                     }
                 }
 
-                // 2.3 无明显连接词，则直接在自然边界（第 10-12 字）切分
-                if (splitIdx < 0)
+                if (shouldSplit)
                 {
-                    splitIdx = Math.Min(12, remaining.Length / 2);
+                    string part = sentence.Substring(segStart, i - segStart + splitLen).Trim();
+                    if (!string.IsNullOrWhiteSpace(part))
+                    {
+                        parts.Add(part);
+                    }
+                    segStart = i + splitLen;
                 }
-
-                string chunk = remaining.Substring(0, splitIdx).Trim();
-                if (!string.IsNullOrWhiteSpace(chunk))
-                {
-                    subDivided.Add(chunk);
-                }
-                remaining = remaining.Substring(splitIdx).Trim();
             }
-
-            if (!string.IsNullOrWhiteSpace(remaining))
+            if (segStart < sentence.Length)
             {
-                subDivided.Add(remaining);
+                string lastPart = sentence.Substring(segStart).Trim();
+                if (!string.IsNullOrWhiteSpace(lastPart))
+                {
+                    parts.Add(lastPart);
+                }
             }
+
+            subDivided.AddRange(parts.Count > 0 ? parts : new List<string> { sentence });
         }
 
-        // 3. 智能粘合过短的单个字或语气词（纯文字长度 <= 1，如单个“好”或“嗯”，避免切得太碎导致音素失真）
+        // ── 第 3 步：粘合过短片段（纯文字长度 ≤ 3，如单个"好""嗯""OK"等） ──
+        // 避免极短的 TTS 请求产生不自然的长停顿
         var merged = new List<string>();
-        for (int i = 0; i < subDivided.Count; i++)
+        foreach (var item in subDivided)
         {
-            string item = subDivided[i];
-            string plain = item.Trim('。', '.', '！', '!', '？', '?', '，', ',', '、', '…', '~', ' ');
-            if (merged.Count > 0 && plain.Length <= 1)
+            string plain = item.Trim('。', '.', '！', '!', '？', '?', '，', ',', '、', '；', ';', '…', '~', ' ');
+            if (merged.Count > 0 && plain.Length <= 3)
             {
-                merged[^1] = merged[^1].TrimEnd('。', '.', '！', '!', '？', '?', '，', ',', '、') + "，" + item;
+                // 粘合到上一个分句
+                string prev = merged[^1];
+                // 移除上一句的末尾句号，用逗号连接
+                prev = prev.TrimEnd('。', '.', '！', '!', '？', '?');
+                merged[^1] = prev + "，" + item;
             }
             else
             {
@@ -793,8 +823,7 @@ public partial class SettingsService
             }
         }
 
-        // 4. 对每个分句规范化标点与声学清洗
-        var result = new List<string>();
+        // ── 第 4 步：规范化标点与声学清洗 ──
         foreach (var c in merged)
         {
             string prepared = PrepareTextForTts(c);
