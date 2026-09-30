@@ -580,7 +580,7 @@ public partial class SettingsService
     }
 
     /// <summary>
-    /// 流式分句推流管线：对长句或多句进行语义断句，首句合成完成立即推流，后续分句边播放边后台生成无缝衔接
+    /// 流式推流管线：直接向 IndexTTS 发起 /tts/stream 流式输出请求，首块到达立即唤醒声卡推流，后续音频流在后台边生成边播放
     /// </summary>
     public async Task<bool> SpeakTextStreamAsync(string text, bool force = false)
     {
@@ -589,37 +589,31 @@ public partial class SettingsService
             return false;
         }
 
-        var clauses = SplitIntoSpeechClauses(text);
-        if (clauses.Count == 0) return false;
+        string cleanText = PrepareTextForTts(text);
+        if (string.IsNullOrWhiteSpace(cleanText)) return false;
 
         TtsActiveStateChanged?.Invoke(true);
         TtsProgressChanged?.Invoke(-1);
-        SpeechStatusUpdated?.Invoke(clauses.Count > 1 ? $"正在合成语音 (1/{clauses.Count})..." : "正在合成语音...");
+        SpeechStatusUpdated?.Invoke("正在流式合成语音...");
 
         try
         {
             bool ok = await TtsService.PlayStreamAsync(
-                clauses,
+                cleanText,
                 TtsVirtualMicDeviceId,
                 TtsMonitorDeviceId,
                 IsTtsMonitorEnabled,
                 TtsOutputVolume,
                 TtsMonitorVolume,
-                onClauseSynthesized: (idx, total) =>
+                onChunkReceived: (chunkIdx) =>
                 {
-                    double pct = (idx + 1.0) / total * 100.0;
-                    TtsProgressChanged?.Invoke(pct);
-                    SpeechStatusUpdated?.Invoke($"正在合成语音 ({idx + 1}/{total})...");
-                },
-                onClausePlaying: (idx, total) =>
-                {
-                    SpeechStatusUpdated?.Invoke($"正在推流播放 ({idx}/{total})...");
+                    SpeechStatusUpdated?.Invoke($"正在流式推流播放 (第 {chunkIdx} 块)...");
                 }
             );
 
             if (ok)
             {
-                AddLog("TTS Speech", $"流式语音推流完成: \"{text}\" ({clauses.Count}个分句)", true);
+                AddLog("TTS Speech", $"流式语音推流完成: \"{cleanText}\"", true);
             }
             return ok;
         }
@@ -641,8 +635,8 @@ public partial class SettingsService
     /// </summary>
     public async Task<bool> SpeakLocalPreviewStreamAsync(string text)
     {
-        var clauses = SplitIntoSpeechClauses(text);
-        if (clauses.Count == 0) return false;
+        string cleanText = PrepareTextForTts(text);
+        if (string.IsNullOrWhiteSpace(cleanText)) return false;
 
         TtsActiveStateChanged?.Invoke(true);
         TtsProgressChanged?.Invoke(-1);
@@ -651,20 +645,15 @@ public partial class SettingsService
         try
         {
             return await TtsService.PlayStreamAsync(
-                clauses,
+                cleanText,
                 virtualMicDeviceId: null,
                 monitorDeviceId: TtsMonitorDeviceId,
                 enableMonitor: true,
                 micVolume: 0f,
                 monitorVolume: TtsMonitorVolume,
-                onClauseSynthesized: (idx, total) =>
+                onChunkReceived: (chunkIdx) =>
                 {
-                    TtsProgressChanged?.Invoke((idx + 1.0) / total * 100.0);
-                    SpeechStatusUpdated?.Invoke($"正在合成试听 ({idx + 1}/{total})...");
-                },
-                onClausePlaying: (idx, total) =>
-                {
-                    SpeechStatusUpdated?.Invoke($"正在试听播放 ({idx}/{total})...");
+                    SpeechStatusUpdated?.Invoke($"正在流式试听播放 (第 {chunkIdx} 块)...");
                 }
             );
         }

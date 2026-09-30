@@ -67,7 +67,8 @@ public sealed partial class TtsSection : UserControl
         var health = await TtsService.Instance.CheckHealthAsync();
         if (health != null && health.Ready)
         {
-            UpdateStatusIndicator(TtsServerState.Ready, $"服务就绪！(模型: {health.Model}, 显存模式: Low VRAM)");
+            string modeDesc = health.LowVram ? "Low VRAM" : "流式全显存模式";
+            UpdateStatusIndicator(TtsServerState.Ready, $"服务就绪！(模型: {health.Model}, 模式: {modeDesc})");
         }
         else if (health != null && !health.Ready)
         {
@@ -347,7 +348,7 @@ public sealed partial class TtsSection : UserControl
             bool ok = await SettingsService.Instance.SpeakLocalPreviewStreamAsync(text);
             if (ok)
             {
-                TestResultTextBlock.Text = "本地试听播放完成！首句已毫秒级响应出声。";
+                TestResultTextBlock.Text = "本地试听播放完成！已毫秒级流式响应出声。";
             }
             else
             {

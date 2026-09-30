@@ -41,7 +41,7 @@ public sealed class TtsService : IDisposable
     {
         _httpClient = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(60)
+            Timeout = TimeSpan.FromMinutes(5)
         };
     }
 
@@ -237,7 +237,8 @@ public sealed class TtsService : IDisposable
                 health = await CheckHealthAsync(cfg.TtsServerEndpoint);
                 if (health != null && health.Ready)
                 {
-                    SetState(TtsServerState.Ready, $"IndexTTS 引擎加载就绪！(专属微调模型: {health.Model}, 显存 <1.3GB)");
+                    string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
+                    SetState(TtsServerState.Ready, $"IndexTTS 引擎加载就绪！(专属微调模型: {health.Model}, {modeDesc})");
                     return true;
                 }
             }
@@ -479,21 +480,150 @@ public sealed class TtsService : IDisposable
     }
 
     /// <summary>
-    /// 流式分句推流管线：第 1 个分句合成完毕立刻唤醒声卡开始推流，后续分句后台并发合成并无缝追加进缓冲队列
-    /// 实现从“整段长等待”到“毫秒级首字出声”的飞跃
+    /// 请求 IndexTTS 服务进行真正低延迟流式语音合成（POST /tts/stream?format=pcm）
+    /// 逐块产出 24kHz 16-bit 单声道 PCM 音频流，首包延迟 ~550ms，全程内存无磁盘 IO
+    /// </summary>
+    public async IAsyncEnumerable<byte[]> SynthesizeStreamAsync(
+        string text,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        string rawText = (text ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            yield break;
+        }
+
+        var cfg = SettingsService.Instance.Config;
+        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm";
+
+        var prevState = State;
+        SetState(TtsServerState.Synthesizing, $"正在流式合成语音: \"{rawText}\"...");
+
+        var reqObj = new
+        {
+            text = rawText,
+            audio_prompt = (string?)null // 免参考音频，自动使用微调专属音色
+        };
+        string reqJson = JsonSerializer.Serialize(reqObj);
+        using var request = new HttpRequestMessage(HttpMethod.Post, streamUrl)
+        {
+            Content = new StringContent(reqJson, Encoding.UTF8, "application/json")
+        };
+
+        HttpResponseMessage resp;
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            resp = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            SetState(prevState, "流式合成已取消");
+            yield break;
+        }
+        catch (Exception ex)
+        {
+            SetState(prevState, $"流式连接异常: {ex.Message}");
+            LogOccurred?.Invoke($"[TTS Stream] 请求连接异常: {ex.Message}");
+            yield break;
+        }
+
+        using (resp)
+        {
+            if (!resp.IsSuccessStatusCode)
+            {
+                string errDetail = await resp.Content.ReadAsStringAsync(ct);
+                SetState(prevState, $"流式合成失败: HTTP {(int)resp.StatusCode}");
+                LogOccurred?.Invoke($"[TTS Stream] 合成失败 (HTTP {(int)resp.StatusCode}): {errDetail}");
+                yield break;
+            }
+
+            using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            byte[] readBuffer = new byte[16384]; // 16KB 读取缓冲
+            byte[]? leftover = null; // 保证按 2 字节（int16 sample）对齐
+            long totalBytes = 0;
+            int chunkCount = 0;
+            bool firstChunk = true;
+
+            while (true)
+            {
+                int bytesRead;
+                try
+                {
+                    bytesRead = await stream.ReadAsync(readBuffer.AsMemory(0, readBuffer.Length), ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                if (bytesRead <= 0) break;
+
+                chunkCount++;
+                if (firstChunk)
+                {
+                    firstChunk = false;
+                    LogOccurred?.Invoke($"[TTS Stream] 收到首块音频流 (首包耗时: {sw.ElapsedMilliseconds}ms, 大小: {bytesRead}B)");
+                }
+
+                // 处理 16-bit PCM 字节对齐（2 字节/样本）
+                byte[] toProcess;
+                if (leftover != null && leftover.Length > 0)
+                {
+                    toProcess = new byte[leftover.Length + bytesRead];
+                    Buffer.BlockCopy(leftover, 0, toProcess, 0, leftover.Length);
+                    Buffer.BlockCopy(readBuffer, 0, toProcess, leftover.Length, bytesRead);
+                    leftover = null;
+                }
+                else
+                {
+                    toProcess = new byte[bytesRead];
+                    Buffer.BlockCopy(readBuffer, 0, toProcess, 0, bytesRead);
+                }
+
+                int usableBytes = toProcess.Length - (toProcess.Length % 2);
+                if (usableBytes < toProcess.Length)
+                {
+                    leftover = new byte[toProcess.Length - usableBytes];
+                    Buffer.BlockCopy(toProcess, usableBytes, leftover, 0, leftover.Length);
+                }
+
+                if (usableBytes > 0)
+                {
+                    totalBytes += usableBytes;
+                    byte[] chunk = (usableBytes == toProcess.Length) ? toProcess : toProcess[..usableBytes];
+                    yield return chunk;
+                }
+            }
+
+            sw.Stop();
+            double duration = (double)totalBytes / (24000 * 2);
+            SetState(prevState, $"流式合成完成 (耗时: {sw.ElapsedMilliseconds}ms, 音频时长: {duration:F2}s, 块数: {chunkCount})");
+            LogOccurred?.Invoke($"[TTS Stream] 流式传输结束: 共 {chunkCount} 块, 总字节: {totalBytes} ({duration:F2}s), 耗时: {sw.ElapsedMilliseconds}ms");
+            SynthesisCompleted?.Invoke(rawText, duration, sw.ElapsedMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// 流式推流管线：直接发起 IndexTTS /tts/stream 流式请求，
+    /// 收到首个 PCM 音频块立刻唤醒声卡开始推流，后续音频流在后台边生成边播放，
+    /// 实现毫秒级（约 500ms）首字出声，全程在内存中完成，不落磁盘。
     /// </summary>
     public async Task<bool> PlayStreamAsync(
-        IReadOnlyList<string> clauses,
+        string text,
         string? virtualMicDeviceId = null,
         string? monitorDeviceId = null,
         bool enableMonitor = true,
         float micVolume = 1.0f,
         float monitorVolume = 0.8f,
-        Action<int, int>? onClauseSynthesized = null,
-        Action<int, int>? onClausePlaying = null,
+        Action<int>? onChunkReceived = null,
         CancellationToken ct = default)
     {
-        if (clauses == null || clauses.Count == 0) return false;
+        string rawText = (text ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(rawText)) return false;
+
+        // 停止上一次未完成的推流
+        StopPlayback();
 
         try
         {
@@ -596,103 +726,44 @@ public sealed class TtsService : IDisposable
                     }
 
                     bool startedPlayback = false;
-                    int total = clauses.Count;
-                    var audioQueue = System.Threading.Channels.Channel.CreateUnbounded<(int index, byte[] pcm, double duration)>();
-                    byte[] silencePad = new byte[2400]; // 50ms 句间自然呼吸停顿 (24000 * 2 * 0.05 = 2400 bytes)
+                    int chunkCount = 0;
 
-                    // ── 生产者任务：GPU 连续高速推理，不受音频播放速度拖累 ──
-                    var producerTask = Task.Run(async () =>
+                    await foreach (var chunk in SynthesizeStreamAsync(rawText, token))
                     {
-                        try
+                        if (token.IsCancellationRequested) break;
+                        chunkCount++;
+
+                        // 送入音频缓冲区
+                        if (isSameDevice && bufferSame != null)
                         {
-                            for (int i = 0; i < total; i++)
+                            bufferSame.AddSamples(chunk, 0, chunk.Length);
+                        }
+                        else
+                        {
+                            if (bufferMic != null) bufferMic.AddSamples(chunk, 0, chunk.Length);
+                            if (bufferMon != null) bufferMon.AddSamples(chunk, 0, chunk.Length);
+                        }
+
+                        // 收到首个音频块立即唤醒声卡推流开播（实现毫秒级首字出声）
+                        if (!startedPlayback)
+                        {
+                            startedPlayback = true;
+                            if (isSameDevice)
                             {
-                                if (token.IsCancellationRequested) break;
-                                onClauseSynthesized?.Invoke(i, total);
-
-                                var res = await SynthesizeAsync(clauses[i], token);
-                                if (token.IsCancellationRequested) break;
-
-                                if (res.Success && res.AudioBytes != null && res.AudioBytes.Length > 0)
-                                {
-                                    using var ms = new MemoryStream(res.AudioBytes);
-                                    using var reader = new WaveFileReader(ms);
-                                    byte[] pcm = new byte[reader.Length];
-                                    int read = reader.Read(pcm, 0, pcm.Length);
-                                    if (read > 0)
-                                    {
-                                        byte[] actual = (read == pcm.Length) ? pcm : pcm[..read];
-                                        await audioQueue.Writer.WriteAsync((i, actual, res.DurationSeconds), token);
-                                    }
-                                }
+                                playerSame?.Play();
+                            }
+                            else
+                            {
+                                playerMic?.Play();
+                                playerMon?.Play();
                             }
                         }
-                        catch (OperationCanceledException) { }
-                        catch (Exception ex)
-                        {
-                            LogOccurred?.Invoke($"分句合成生产者异常: {ex.Message}");
-                        }
-                        finally
-                        {
-                            audioQueue.Writer.TryComplete();
-                        }
-                    }, token);
 
-                    // ── 消费者任务：从队列按顺序取音频，无缝追加到 10 分钟超大缓冲区播放 ──
-                    try
-                    {
-                        while (await audioQueue.Reader.WaitToReadAsync(token))
-                        {
-                            while (audioQueue.Reader.TryRead(out var item))
-                            {
-                                if (token.IsCancellationRequested) break;
-
-                                // 句间平滑微停顿（首句之后追加，防音素硬粘连）
-                                if (startedPlayback)
-                                {
-                                    if (isSameDevice && bufferSame != null) bufferSame.AddSamples(silencePad, 0, silencePad.Length);
-                                    else
-                                    {
-                                        if (bufferMic != null) bufferMic.AddSamples(silencePad, 0, silencePad.Length);
-                                        if (bufferMon != null) bufferMon.AddSamples(silencePad, 0, silencePad.Length);
-                                    }
-                                }
-
-                                // 送入无界音频队列（支持任意长句，绝不截断、绝不溢出、绝不死锁）
-                                if (isSameDevice && bufferSame != null)
-                                {
-                                    bufferSame.AddSamples(item.pcm, 0, item.pcm.Length);
-                                }
-                                else
-                                {
-                                    if (bufferMic != null) bufferMic.AddSamples(item.pcm, 0, item.pcm.Length);
-                                    if (bufferMon != null) bufferMon.AddSamples(item.pcm, 0, item.pcm.Length);
-                                }
-
-                                // 首句即刻唤醒声卡推流开播
-                                if (!startedPlayback)
-                                {
-                                    startedPlayback = true;
-                                    if (isSameDevice)
-                                    {
-                                        playerSame?.Play();
-                                    }
-                                    else
-                                    {
-                                        playerMic?.Play();
-                                        playerMon?.Play();
-                                    }
-                                }
-
-                                onClausePlaying?.Invoke(item.index + 1, total);
-                            }
-                        }
+                        onChunkReceived?.Invoke(chunkCount);
+                        StreamProgressChanged?.Invoke(chunkCount, 0);
                     }
-                    catch (OperationCanceledException) { }
 
-                    await producerTask;
-
-                    // 句子全部合成送入后，等待缓冲区全部音频彻底播放完毕
+                    // 全部流式音频接收完毕，等待缓冲区全部音频彻底播放完毕
                     if (startedPlayback)
                     {
                         while (!token.IsCancellationRequested)
@@ -730,6 +801,33 @@ public sealed class TtsService : IDisposable
             PlaybackActiveStateChanged?.Invoke(false);
             _playbackQueueLock.Release();
         }
+    }
+
+    /// <summary>
+    /// 兼容重载：支持接收分句列表，拼接后以单一流式请求完成高效推理
+    /// </summary>
+    public Task<bool> PlayStreamAsync(
+        IReadOnlyList<string> clauses,
+        string? virtualMicDeviceId = null,
+        string? monitorDeviceId = null,
+        bool enableMonitor = true,
+        float micVolume = 1.0f,
+        float monitorVolume = 0.8f,
+        Action<int, int>? onClauseSynthesized = null,
+        Action<int, int>? onClausePlaying = null,
+        CancellationToken ct = default)
+    {
+        if (clauses == null || clauses.Count == 0) return Task.FromResult(false);
+        string combined = string.Join(" ", clauses);
+        return PlayStreamAsync(
+            combined,
+            virtualMicDeviceId,
+            monitorDeviceId,
+            enableMonitor,
+            micVolume,
+            monitorVolume,
+            onChunkReceived: onClauseSynthesized != null ? (c) => onClauseSynthesized(c, 0) : null,
+            ct);
     }
 
     /// <summary>

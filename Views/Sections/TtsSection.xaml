@@ -27,7 +27,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Spacing="4">
                         <TextBlock Text="IndexTTS 1.5 微服务状态" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-                        <TextBlock Text="免参考音频纯模型直接推理 (Zero-Prompt)，专属微调权重，极低显存模式 (&lt; 1.28 GB)"
+                        <TextBlock Text="免参考音频纯模型直接推理 (Zero-Prompt)，专属微调权重，低延迟流式输出 (~500ms 出声)"
                                    Style="{StaticResource CaptionTextBlockStyle}"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
