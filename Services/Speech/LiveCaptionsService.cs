@@ -57,6 +57,7 @@ public partial class LiveCaptionsService : IDisposable
     public async Task<bool> StartAsync(bool hideNativeWindow = true)
     {
         await _sessionLock.WaitAsync();
+        IntPtr prevForeground = GetForegroundWindow();
         try
         {
             if (_isRunning) return true;
@@ -64,7 +65,7 @@ public partial class LiveCaptionsService : IDisposable
             _workerCts = new CancellationTokenSource();
             var token = _workerCts.Token;
 
-            _hWnd = await EnsureLiveCaptionsProcessAsync(token);
+            _hWnd = await EnsureLiveCaptionsProcessAsync(token, hideNativeWindow);
             if (_hWnd == IntPtr.Zero)
             {
                 ErrorOccurred?.Invoke("未找到 Windows 实时字幕窗口。请检查系统版本是否为 Windows 11 22H2 以上。");
@@ -74,6 +75,10 @@ public partial class LiveCaptionsService : IDisposable
             if (hideNativeWindow)
             {
                 HideNativeWindow();
+                if (prevForeground != IntPtr.Zero && prevForeground != _hWnd)
+                {
+                    SetForegroundWindow(prevForeground);
+                }
             }
 
             _isRunning = true;
@@ -123,6 +128,7 @@ public partial class LiveCaptionsService : IDisposable
     public async Task<bool> RestartAsync(bool hideNativeWindow = true)
     {
         await _sessionLock.WaitAsync();
+        IntPtr prevForeground = GetForegroundWindow();
         try
         {
             _isRunning = false;
@@ -148,12 +154,12 @@ public partial class LiveCaptionsService : IDisposable
             catch { }
 
             _hWnd = IntPtr.Zero;
-            await Task.Delay(200);
+            await Task.Delay(100);
 
             _workerCts = new CancellationTokenSource();
             var token = _workerCts.Token;
 
-            _hWnd = await EnsureLiveCaptionsProcessAsync(token);
+            _hWnd = await EnsureLiveCaptionsProcessAsync(token, hideNativeWindow);
             if (_hWnd == IntPtr.Zero)
             {
                 ErrorOccurred?.Invoke("重启 Windows 实时字幕失败，未找到窗口");
@@ -163,6 +169,10 @@ public partial class LiveCaptionsService : IDisposable
             if (hideNativeWindow)
             {
                 HideNativeWindow();
+                if (prevForeground != IntPtr.Zero && prevForeground != _hWnd)
+                {
+                    SetForegroundWindow(prevForeground);
+                }
             }
 
             _isRunning = true;
