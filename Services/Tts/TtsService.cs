@@ -494,7 +494,7 @@ public sealed class TtsService : IDisposable
         }
 
         var cfg = SettingsService.Instance.Config;
-        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm";
+        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm&first_chunk_frames=16";
 
         var prevState = State;
         SetState(TtsServerState.Synthesizing, $"正在流式合成语音: \"{rawText}\"...");
@@ -727,11 +727,19 @@ public sealed class TtsService : IDisposable
 
                     bool startedPlayback = false;
                     int chunkCount = 0;
+                    long totalBufferedBytes = 0;
+                    // 防首包断流预缓冲阈值：
+                    // IndexTTS 首块通常仅 8 帧 (~341ms)，而次块推理需 ~550ms。
+                    // 若首块一到立刻播放，声卡播完首块后会发生约 200ms 短暂断流卡壳。
+                    // 通过累积到第 2 块到达（或累积缓冲达到 32KB/~666ms）再唤醒声卡推流，
+                    // 彻底消除初始卡顿，保证后续全流程丝滑不中断。
+                    const int PRE_BUFFER_BYTES = 32000;
 
                     await foreach (var chunk in SynthesizeStreamAsync(rawText, token))
                     {
                         if (token.IsCancellationRequested) break;
                         chunkCount++;
+                        totalBufferedBytes += chunk.Length;
 
                         // 送入音频缓冲区
                         if (isSameDevice && bufferSame != null)
@@ -744,8 +752,8 @@ public sealed class TtsService : IDisposable
                             if (bufferMon != null) bufferMon.AddSamples(chunk, 0, chunk.Length);
                         }
 
-                        // 收到首个音频块立即唤醒声卡推流开播（实现毫秒级首字出声）
-                        if (!startedPlayback)
+                        // 累积至少 2 块或达到缓冲水位时唤醒声卡推流
+                        if (!startedPlayback && (chunkCount >= 2 || totalBufferedBytes >= PRE_BUFFER_BYTES))
                         {
                             startedPlayback = true;
                             if (isSameDevice)
@@ -761,6 +769,21 @@ public sealed class TtsService : IDisposable
 
                         onChunkReceived?.Invoke(chunkCount);
                         StreamProgressChanged?.Invoke(chunkCount, 0);
+                    }
+
+                    // 短文本兜底：若整段文本仅产生 1 个音频块就已生成完毕，在流结束时立即唤醒声卡播完
+                    if (!startedPlayback && chunkCount > 0 && !token.IsCancellationRequested)
+                    {
+                        startedPlayback = true;
+                        if (isSameDevice)
+                        {
+                            playerSame?.Play();
+                        }
+                        else
+                        {
+                            playerMic?.Play();
+                            playerMon?.Play();
+                        }
                     }
 
                     // 全部流式音频接收完毕，等待缓冲区全部音频彻底播放完毕
