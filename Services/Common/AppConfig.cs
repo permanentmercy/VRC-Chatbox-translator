@@ -111,8 +111,8 @@ public class AppConfig
     public string TtsServerEndpoint { get; set; } = "http://127.0.0.1:9880";
     public int TtsServerPort { get; set; } = 9880;
     public bool AutoStartTtsServer { get; set; } = false;
-    public string TtsPythonExePath { get; set; } = @"H:\program\chatbox\Index_TTS\coderyuanai\python.exe";
-    public string TtsServerScriptPath { get; set; } = @"H:\program\chatbox\Index_TTS\tts_server.py";
+    public string TtsPythonExePath { get; set; } = @"D:\software\conda\envs\indextts\python.exe";
+    public string TtsServerScriptPath { get; set; } = @"H:\program\chatbox\indextts\tts_server.py";
     public string TtsModelName { get; set; } = "gpt_me_lora.pth";
     public string TtsVirtualMicDeviceId { get; set; } = string.Empty;
     public string TtsMonitorDeviceId { get; set; } = string.Empty;

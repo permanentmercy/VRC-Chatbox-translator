@@ -105,6 +105,10 @@ public partial class SettingsService
                 if (loaded != null)
                 {
                     Config = loaded;
+                    if (MigrateLegacyTtsPaths(Config))
+                    {
+                        SaveConfigImmediately();
+                    }
                 }
             }
             else
@@ -137,5 +141,62 @@ public partial class SettingsService
         {
             SpeechStatus = "就绪 (启动中...)";
         }
+    }
+
+    /// <summary>
+    /// 自动将旧版 Index_TTS 路径迁移至全新的 indextts 仓库与 Conda 环境
+    /// </summary>
+    public static bool MigrateLegacyTtsPaths(AppConfig cfg)
+    {
+        bool changed = false;
+
+        // 目标脚本路径: indextts\tts_server.py
+        string defaultScript = @"H:\program\chatbox\indextts\tts_server.py";
+        string? resolvedScript = null;
+        if (File.Exists(defaultScript))
+        {
+            resolvedScript = defaultScript;
+        }
+        else
+        {
+            try
+            {
+                string candidate = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\..\..\indextts\tts_server.py"));
+                if (File.Exists(candidate)) resolvedScript = candidate;
+            }
+            catch { }
+        }
+
+        if (!string.IsNullOrEmpty(resolvedScript))
+        {
+            if (string.IsNullOrWhiteSpace(cfg.TtsServerScriptPath) ||
+                cfg.TtsServerScriptPath.Contains("Index_TTS", StringComparison.OrdinalIgnoreCase) ||
+                !File.Exists(cfg.TtsServerScriptPath))
+            {
+                if (!string.Equals(cfg.TtsServerScriptPath, resolvedScript, StringComparison.OrdinalIgnoreCase))
+                {
+                    cfg.TtsServerScriptPath = resolvedScript;
+                    changed = true;
+                }
+            }
+        }
+
+        // 目标 Python 解释器: Conda indextts 环境
+        string defaultPython = @"D:\software\conda\envs\indextts\python.exe";
+        if (string.IsNullOrWhiteSpace(cfg.TtsPythonExePath) ||
+            cfg.TtsPythonExePath.Contains("Index_TTS", StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(cfg.TtsPythonExePath))
+        {
+            if (File.Exists(defaultPython))
+            {
+                if (!string.Equals(cfg.TtsPythonExePath, defaultPython, StringComparison.OrdinalIgnoreCase))
+                {
+                    cfg.TtsPythonExePath = defaultPython;
+                    changed = true;
+                }
+            }
+        }
+
+        return changed;
     }
 }

@@ -148,6 +148,10 @@ public sealed class TtsService : IDisposable
     public async Task<bool> StartManagedServerAsync()
     {
         var cfg = SettingsService.Instance.Config;
+        if (SettingsService.MigrateLegacyTtsPaths(cfg))
+        {
+            SettingsService.Instance.SaveConfigDebounced();
+        }
 
         // 1. 先探测是否已经有运行中的服务（例如用户此前已启动或独立启动）
         var health = await CheckHealthAsync(cfg.TtsServerEndpoint);
