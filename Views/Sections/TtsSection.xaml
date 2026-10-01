@@ -10,7 +10,7 @@
     <StackPanel Spacing="18">
         <StackPanel Spacing="4">
             <TextBlock Text="TTS 语音合成与虚拟麦克风" Style="{StaticResource TitleTextBlockStyle}" />
-            <TextBlock Text="基于 IndexTTS 1.5 专属微调模型直接推理，推流至虚拟声卡并在 VRChat 内实时发声"
+            <TextBlock Text="调用本地 IndexTTS 服务合成语音，经虚拟声卡桥接由 VRChat 麦克风采集播放"
                        Style="{StaticResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </StackPanel>
@@ -27,7 +27,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Spacing="4">
                         <TextBlock Text="IndexTTS 1.5 微服务状态" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-                        <TextBlock Text="免参考音频纯模型直接推理 (Zero-Prompt)，专属微调权重，低延迟流式输出 (~500ms 出声)"
+                        <TextBlock Text="连接本地 IndexTTS 的 HTTP 服务进行语音合成，需要自行部署服务并填好地址与模型路径"
                                    Style="{StaticResource CaptionTextBlockStyle}"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
@@ -69,9 +69,9 @@
                              Text="http://127.0.0.1:9880"
                              TextChanged="ServerEndpointTextBox_TextChanged" />
 
-                    <TextBox x:Name="ModelNameTextBox" Grid.Column="1" Header="微调模型权重"
+                    <TextBox x:Name="ModelNameTextBox" Grid.Column="1" Header="模型权重文件名"
                              Text="gpt_me_lora.pth" IsReadOnly="True"
-                             ToolTipService.ToolTip="已锁定为专属微调 LoRA 权重，纯模型直接推理" />
+                             ToolTipService.ToolTip="由 tts_server.py 启动时加载的模型权重文件，需与脚本配置保持一致" />
                 </Grid>
 
                 <CheckBox x:Name="AutoStartServerCheckBox"
@@ -181,7 +181,7 @@
                          TextWrapping="Wrap"
                          Height="75"
                          HorizontalAlignment="Stretch"
-                         Text="你好，这是来自 VRChat 的实时语音合成测试，无需参考音频，直接通过专属微调模型推理。" />
+                         Text="你好，这是来自 VRChat 的本地语音合成测试，请确认耳机能听到声音。" />
 
                 <Grid ColumnSpacing="10">
                     <Grid.ColumnDefinitions>

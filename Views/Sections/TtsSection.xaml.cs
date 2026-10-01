@@ -189,15 +189,15 @@ public sealed partial class TtsSection : UserControl
         if (hasVirtual)
         {
             VirtualCardInfoBar.Severity = InfoBarSeverity.Success;
-            VirtualCardInfoBar.Title = "✅ 虚拟麦克风跳线声卡已匹配就绪！";
-            VirtualCardInfoBar.Message = "推流目标已自动锁定为虚拟声卡 (CABLE Input)，耳返监听为您自己的物理耳机。请在 VRChat 游戏音频设置中将麦克风选择为 CABLE Output，游戏内的朋友即可听到您的 TTS 实时语音！";
+            VirtualCardInfoBar.Title = "已检测到虚拟声卡，推流目标已设为虚拟声卡";
+            VirtualCardInfoBar.Message = "推流目标已设为虚拟声卡 (如 CABLE Input)，耳返监听为您的物理耳机。请在 VRChat 音频设置中将麦克风选择为对应的 CABLE Output，游戏内好友即可听到 TTS 语音。";
             DownloadVbCableButton.Visibility = Visibility.Collapsed;
         }
         else
         {
             VirtualCardInfoBar.Severity = InfoBarSeverity.Warning;
-            VirtualCardInfoBar.Title = "⚠️ 未检测到虚拟麦克风声卡 (当前推流目标暂回退至扬声器/耳机)";
-            VirtualCardInfoBar.Message = "Windows 系统不允许软件直接把声音写入物理硬件麦克风。要让 VRChat 里的朋友从麦克风听到声音，需安装免费虚拟声卡跳线 (此处推流目标选 CABLE Input，VRChat 麦克风选 CABLE Output；耳返耳机则选您自己的物理耳机)。请点击右侧按钮下载并安装驱动！";
+            VirtualCardInfoBar.Title = "未检测到虚拟声卡，VRChat 内暂时听不到 TTS 语音";
+            VirtualCardInfoBar.Message = "Windows 不允许软件直接向物理麦克风写入音频。当前推流目标为普通播放设备，声音只会从本机扬声器或耳机放出，游戏内无法采集。请安装虚拟声卡跳线 (推流目标选 CABLE Input，VRChat 麦克风选 CABLE Output)，然后点击上方刷新设备列表。";
             DownloadVbCableButton.Visibility = Visibility.Visible;
         }
     }
@@ -308,7 +308,7 @@ public sealed partial class TtsSection : UserControl
             bool ok = await SettingsService.Instance.SpeakTextStreamAsync(text, force: true);
             if (ok)
             {
-                TestResultTextBlock.Text = "流式推流完成！已首字极速出声并推流至虚拟声卡。";
+                TestResultTextBlock.Text = "流式推流完成，已发送到虚拟声卡。";
             }
             else
             {
@@ -340,7 +340,7 @@ public sealed partial class TtsSection : UserControl
             bool ok = await SettingsService.Instance.SpeakLocalPreviewStreamAsync(text);
             if (ok)
             {
-                TestResultTextBlock.Text = "本地试听播放完成！已毫秒级流式响应出声。";
+                TestResultTextBlock.Text = "本地试听播放完成。";
             }
             else
             {

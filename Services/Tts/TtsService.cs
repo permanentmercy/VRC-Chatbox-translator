@@ -152,7 +152,7 @@ public sealed class TtsService : IDisposable
         if (health != null && health.Ready)
         {
             string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
-            SetState(TtsServerState.Ready, $"服务就绪！(专属微调模型: {health.Model}, {modeDesc})");
+            SetState(TtsServerState.Ready, $"服务就绪 (模型: {health.Model}, {modeDesc})");
         }
         else if (health != null && !health.Ready)
         {
@@ -219,7 +219,7 @@ public sealed class TtsService : IDisposable
             // 3. 启动后台静默进程前彻底清理所有旧残留
             StopManagedServer();
 
-            SetState(TtsServerState.Starting, "正在启动 IndexTTS 后台微服务并载入专属微调模型 (耗时约 15~20 秒)...");
+            SetState(TtsServerState.Starting, "正在启动 IndexTTS 后台服务并加载模型 (耗时约 15~20 秒)...");
 
             string workDir = Path.GetDirectoryName(cfg.TtsServerScriptPath) ?? "";
             var psi = new ProcessStartInfo
@@ -298,7 +298,7 @@ public sealed class TtsService : IDisposable
                 if (health != null && health.Ready)
                 {
                     string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
-                    SetState(TtsServerState.Ready, $"IndexTTS 引擎加载就绪！(专属微调模型: {health.Model}, {modeDesc})");
+                    SetState(TtsServerState.Ready, $"IndexTTS 引擎加载就绪 (模型: {health.Model}, {modeDesc})");
                     return true;
                 }
             }

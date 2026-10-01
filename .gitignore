@@ -101,3 +101,8 @@ project.fragment.lock.json
 *.appxupload
 *.cer
 *.pfx
+
+# ==========================================
+# WorkBuddy Working Memory (个人工作日志与笔记，非项目源码)
+# ==========================================
+.workbuddy/memory/
