@@ -625,7 +625,7 @@ public sealed class TtsService : IDisposable
             }
 
             using var stream = await resp.Content.ReadAsStreamAsync(ct);
-            byte[] readBuffer = new byte[16384]; // 16KB 读取缓冲
+            byte[] readBuffer = new byte[32768]; // 32KB 读取缓冲，减少网络分包与读取碎片
             byte[]? leftover = null; // 保证按 2 字节（int16 sample）对齐
             long totalBytes = 0;
             int chunkCount = 0;
@@ -814,12 +814,14 @@ public sealed class TtsService : IDisposable
                     bool startedPlayback = false;
                     int chunkCount = 0;
                     long totalBufferedBytes = 0;
-                    // 防首包断流预缓冲阈值：
-                    // IndexTTS 首块通常仅 8 帧 (~341ms)，而次块推理需 ~550ms。
-                    // 若首块一到立刻播放，声卡播完首块后会发生约 200ms 短暂断流卡壳。
-                    // 通过累积到第 2 块到达（或累积缓冲达到 32KB/~666ms）再唤醒声卡推流，
-                    // 彻底消除初始卡顿，保证后续全流程丝滑不中断。
-                    const int PRE_BUFFER_BYTES = 32000;
+                    // 防首包欠载预缓冲阈值：
+                    // IndexTTS 首块通常仅 8 帧 (~341ms，16384 字节)，而次块 (24 帧，约 1.02s，49152 字节) 推理需 ~450ms。
+                    // 若首块一到（或仅读入少量网络分包，如 chunkCount >= 2 早期误触发）便立刻唤醒声卡播放，
+                    // 声卡在 ~340ms 内播完首块后，次块尚未生成完毕，WASAPI 缓冲耗尽并填充静音，造成开头音频明显的短暂断流卡顿。
+                    // 将预防水位设置为 48000 字节（精确对应 24000Hz 16-bit 单声道下的 1.0 秒音频）。
+                    // 开播判据严格依赖实际累积字节数：当首块 + 次块到达使总缓冲达到 >= 48000 字节时再唤醒推流。
+                    // 此时队列已有 1.36 秒音频储备，而后续每块生成只需 ~0.45 秒 (RTF ≈ 0.45)，声卡绝不会欠载，从根源消除开头与中间的一切卡顿。
+                    const int PRE_BUFFER_BYTES = 48000;
 
                     await foreach (var chunk in SynthesizeStreamAsync(rawText, token))
                     {
@@ -838,8 +840,8 @@ public sealed class TtsService : IDisposable
                             if (bufferMon != null) bufferMon.AddSamples(chunk, 0, chunk.Length);
                         }
 
-                        // 累积至少 2 块或达到缓冲水位时唤醒声卡推流
-                        if (!startedPlayback && (chunkCount >= 2 || totalBufferedBytes >= PRE_BUFFER_BYTES))
+                        // 累积达到防欠载预缓冲水位（至少 1 秒音频储备）时唤醒声卡推流
+                        if (!startedPlayback && totalBufferedBytes >= PRE_BUFFER_BYTES)
                         {
                             startedPlayback = true;
                             if (isSameDevice)
@@ -857,8 +859,8 @@ public sealed class TtsService : IDisposable
                         StreamProgressChanged?.Invoke(chunkCount, 0);
                     }
 
-                    // 短文本兜底：若整段文本仅产生 1 个音频块就已生成完毕，在流结束时立即唤醒声卡播完
-                    if (!startedPlayback && chunkCount > 0 && !token.IsCancellationRequested)
+                    // 短文本兜底：若整段文本总音频较短（如短语/单字，全句总长不足 1 秒），在流传输结束 (EOF) 时立即唤醒声卡播完
+                    if (!startedPlayback && totalBufferedBytes > 0 && !token.IsCancellationRequested)
                     {
                         startedPlayback = true;
                         if (isSameDevice)
