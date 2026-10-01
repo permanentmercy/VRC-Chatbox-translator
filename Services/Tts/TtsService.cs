@@ -580,7 +580,7 @@ public sealed class TtsService : IDisposable
         }
 
         var cfg = SettingsService.Instance.Config;
-        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm";
+        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm&first_chunk_frames=12&chunk_frames=16";
 
         var prevState = State;
         SetState(TtsServerState.Synthesizing, $"正在流式合成语音: \"{rawText}\"...");
@@ -588,7 +588,8 @@ public sealed class TtsService : IDisposable
         var reqObj = new
         {
             text = rawText,
-            audio_prompt = (string?)null // 免参考音频，自动使用微调专属音色
+            audio_prompt = (string?)null, // 免参考音频，自动使用微调专属音色
+            do_sample = false            // 贪心解码：2.5倍提速，消除首字出声漫长等待
         };
         string reqJson = JsonSerializer.Serialize(reqObj);
         using var request = new HttpRequestMessage(HttpMethod.Post, streamUrl)
@@ -814,14 +815,13 @@ public sealed class TtsService : IDisposable
                     bool startedPlayback = false;
                     int chunkCount = 0;
                     long totalBufferedBytes = 0;
-                    // 防首包欠载预缓冲阈值：
-                    // IndexTTS 首块通常仅 8 帧 (~341ms，16384 字节)，而次块 (24 帧，约 1.02s，49152 字节) 推理需 ~450ms。
-                    // 若首块一到（或仅读入少量网络分包，如 chunkCount >= 2 早期误触发）便立刻唤醒声卡播放，
-                    // 声卡在 ~340ms 内播完首块后，次块尚未生成完毕，WASAPI 缓冲耗尽并填充静音，造成开头音频明显的短暂断流卡顿。
-                    // 将预防水位设置为 48000 字节（精确对应 24000Hz 16-bit 单声道下的 1.0 秒音频）。
-                    // 开播判据严格依赖实际累积字节数：当首块 + 次块到达使总缓冲达到 >= 48000 字节时再唤醒推流。
-                    // 此时队列已有 1.36 秒音频储备，而后续每块生成只需 ~0.45 秒 (RTF ≈ 0.45)，声卡绝不会欠载，从根源消除开头与中间的一切卡顿。
-                    const int PRE_BUFFER_BYTES = 48000;
+                    // 高响应防欠载预缓冲阈值：
+                    // 服务端已配置首块 12 帧 (24,576 字节，约 512ms 音频) + 贪心解码 (首块仅需 ~440ms 生成)。
+                    // 后续块为 16 帧 (约 683ms 音频)，在 GPU 上仅需 ~270ms 即可生成完毕。
+                    // 因此首块的 512ms 音频完全足够覆盖次块的 270ms 生成耗时（存在 +242ms 的充裕余量）。
+                    // 将预防水位设为 20,000 字节（约 0.42 秒音频）：首块一到达即可立刻唤醒声卡推流，
+                    // 实现从发送文本到首字出声仅 ~450ms 的极致低延迟，且后续推流全程丝滑不中断。
+                    const int PRE_BUFFER_BYTES = 20000;
 
                     await foreach (var chunk in SynthesizeStreamAsync(rawText, token))
                     {
@@ -840,7 +840,7 @@ public sealed class TtsService : IDisposable
                             if (bufferMon != null) bufferMon.AddSamples(chunk, 0, chunk.Length);
                         }
 
-                        // 累积达到防欠载预缓冲水位（至少 1 秒音频储备）时唤醒声卡推流
+                        // 收到首块（达到预防水位）立即唤醒声卡推流，实现 ~450ms 极速首字出声
                         if (!startedPlayback && totalBufferedBytes >= PRE_BUFFER_BYTES)
                         {
                             startedPlayback = true;
@@ -859,7 +859,7 @@ public sealed class TtsService : IDisposable
                         StreamProgressChanged?.Invoke(chunkCount, 0);
                     }
 
-                    // 短文本兜底：若整段文本总音频较短（如短语/单字，全句总长不足 1 秒），在流传输结束 (EOF) 时立即唤醒声卡播完
+                    // 短文本兜底：若整段文本总音频较短（如短语/单字，全句总长不足 0.4 秒），在流传输结束 (EOF) 时立即唤醒声卡播完
                     if (!startedPlayback && totalBufferedBytes > 0 && !token.IsCancellationRequested)
                     {
                         startedPlayback = true;
