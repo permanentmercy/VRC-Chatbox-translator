@@ -32,6 +32,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <TextBox x:Name="OllamaEndpointTextBox" Header="Ollama API 端点" Text="http://127.0.0.1:11434"
@@ -68,6 +69,7 @@
                     </Grid>
 
                     <TextBlock x:Name="OllamaStatusTextBlock" Grid.Row="2" Grid.ColumnSpan="2"
+                               IsHitTestVisible="False"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
                                TextWrapping="Wrap" />
