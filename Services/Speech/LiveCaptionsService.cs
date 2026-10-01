@@ -104,10 +104,12 @@ public partial class LiveCaptionsService : IDisposable
         await _sessionLock.WaitAsync();
         try
         {
-            if (!_isRunning) return;
-
+            bool wasRunning = _isRunning;
             _isRunning = false;
-            RunningStateChanged?.Invoke(false);
+            if (wasRunning)
+            {
+                RunningStateChanged?.Invoke(false);
+            }
 
             try
             {
@@ -117,7 +119,22 @@ public partial class LiveCaptionsService : IDisposable
             }
             catch { }
 
-            StatusChanged?.Invoke("Windows 实时字幕监听已停止");
+            // 彻底终止系统原生 LiveCaptions 进程，释放语音识别模型与资源
+            try
+            {
+                var procs = Process.GetProcessesByName("LiveCaptions");
+                foreach (var p in procs)
+                {
+                    try { p.Kill(); } catch { }
+                }
+            }
+            catch { }
+            _hWnd = IntPtr.Zero;
+
+            if (wasRunning)
+            {
+                StatusChanged?.Invoke("Windows 实时字幕监听已停止");
+            }
         }
         finally
         {
@@ -127,6 +144,11 @@ public partial class LiveCaptionsService : IDisposable
 
     public async Task<bool> RestartAsync(bool hideNativeWindow = true)
     {
+        if (!SettingsService.Instance.IsSpeechRecognitionEnabled)
+        {
+            return false;
+        }
+
         await _sessionLock.WaitAsync();
         IntPtr prevForeground = GetForegroundWindow();
         try

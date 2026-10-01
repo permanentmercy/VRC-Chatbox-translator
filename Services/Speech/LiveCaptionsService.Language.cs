@@ -75,8 +75,9 @@ public partial class LiveCaptionsService
         StatusChanged?.Invoke($"正在切换 Windows 实时字幕语言至: {targetLang.DisplayName}...");
         SetRegistryLanguage(targetLang.Code);
 
-        // 如果当前实时字幕正在运行或处于监听状态，静默热重载以生效新语言设置
-        if (_isRunning || FindLiveCaptionsWindow() != IntPtr.Zero)
+        // 仅当实时字幕当前已启用且处于监听状态时，才热重载字幕进程以生效新语言设置；
+        // 若用户已关闭字幕语音识别，绝不擅自唤起或重启 LiveCaptions，防止因模型残留而在切换语言时意外重新自动打开监听
+        if (_isRunning && SettingsService.Instance.IsSpeechRecognitionEnabled)
         {
             bool ok = await RestartAsync(SettingsService.Instance.LiveCaptionsHideNativeWindow);
             if (ok)

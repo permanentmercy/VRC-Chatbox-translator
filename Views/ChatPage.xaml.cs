@@ -38,6 +38,7 @@ public sealed partial class ChatPage : Page
         s.RequestAutoFillInput += OnRequestAutoFillInput;
         s.TtsActiveStateChanged += OnTtsActiveStateChanged;
         s.TtsProgressChanged += OnTtsProgressChanged;
+        s.TtsStatusUpdated += OnTtsStatusUpdated;
 
         RecognizedTextBlock.Text = s.LastRecognizedText;
         TranslatedTextBlock.Text = s.LastTranslatedText;
@@ -57,6 +58,7 @@ public sealed partial class ChatPage : Page
         s.RequestAutoFillInput -= OnRequestAutoFillInput;
         s.TtsActiveStateChanged -= OnTtsActiveStateChanged;
         s.TtsProgressChanged -= OnTtsProgressChanged;
+        s.TtsStatusUpdated -= OnTtsStatusUpdated;
     }
 
     private void OnTtsActiveStateChanged(bool isActive)
@@ -94,6 +96,17 @@ public sealed partial class ChatPage : Page
         });
     }
 
+    private void OnTtsStatusUpdated(string status)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                TtsStatusTextBlock.Text = status;
+            }
+        });
+    }
+
     private void OnSpeechStatusUpdated(string status)
     {
         DispatcherQueue.TryEnqueue(() =>
@@ -102,11 +115,6 @@ public sealed partial class ChatPage : Page
             if (s.IsSpeechRecognitionEnabled && string.IsNullOrWhiteSpace(s.LastRecognizedText))
             {
                 UpdateDisplayVisibility();
-            }
-
-            if (!string.IsNullOrWhiteSpace(status) && status != "就绪")
-            {
-                TtsStatusTextBlock.Text = status;
             }
         });
     }

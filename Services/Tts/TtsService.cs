@@ -143,6 +143,28 @@ public sealed class TtsService : IDisposable
     }
 
     /// <summary>
+    /// 主动探测 TTS 服务健康状态并自动同步全局 State 与提示信息
+    /// </summary>
+    public async Task<TtsHealthStatus?> RefreshHealthAsync(string? endpoint = null)
+    {
+        var health = await CheckHealthAsync(endpoint);
+        if (health != null && health.Ready)
+        {
+            string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
+            SetState(TtsServerState.Ready, $"服务就绪！(专属微调模型: {health.Model}, {modeDesc})");
+        }
+        else if (health != null && !health.Ready)
+        {
+            SetState(TtsServerState.Error, $"服务启动失败: {health.Error ?? "未知错误"}");
+        }
+        else
+        {
+            SetState(TtsServerState.Stopped, "TTS 引擎已停止 (点击右侧启动引擎)");
+        }
+        return health;
+    }
+
+    /// <summary>
     /// 托管启动后台 IndexTTS 1.5 Python 服务
     /// </summary>
     public async Task<bool> StartManagedServerAsync()
@@ -209,6 +231,16 @@ public sealed class TtsService : IDisposable
                 }
             };
 
+            proc.EnableRaisingEvents = true;
+            proc.Exited += (s, e) =>
+            {
+                if (_serverProcess == proc)
+                {
+                    _serverProcess = null;
+                    SetState(TtsServerState.Stopped, "TTS 引擎已停止");
+                }
+            };
+
             proc.Start();
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
@@ -234,6 +266,11 @@ public sealed class TtsService : IDisposable
 
                 if (hasExited)
                 {
+                    if (_serverProcess == null || _serverProcess != proc)
+                    {
+                        // 用户主动停止或清理，不再上报为意外退出
+                        return false;
+                    }
                     SetState(TtsServerState.Error, $"TTS 引擎进程意外退出，退出码: {exitCode}");
                     return false;
                 }
@@ -385,7 +422,7 @@ public sealed class TtsService : IDisposable
             if (!resp.IsSuccessStatusCode)
             {
                 string errDetail = await resp.Content.ReadAsStringAsync(ct);
-                SetState(prevState, $"TTS 合成失败: HTTP {(int)resp.StatusCode}");
+                SetState(TtsServerState.Error, $"TTS 合成失败: HTTP {(int)resp.StatusCode}");
                 return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, 24000, errDetail);
             }
 
@@ -403,19 +440,19 @@ public sealed class TtsService : IDisposable
                 int.TryParse(srValues.FirstOrDefault(), out sr);
             }
 
-            SetState(prevState, $"合成成功 (耗时: {sw.ElapsedMilliseconds}ms, 时长: {duration:F2}s)");
+            SetState(TtsServerState.Ready, $"合成成功 (耗时: {sw.ElapsedMilliseconds}ms, 时长: {duration:F2}s)");
             SynthesisCompleted?.Invoke(rawText, duration, sw.ElapsedMilliseconds);
 
             return new TtsSynthesisResult(true, wavBytes, duration, sw.ElapsedMilliseconds, sr, null);
         }
         catch (OperationCanceledException)
         {
-            SetState(prevState, "合成已取消");
+            SetState(TtsServerState.Ready, "合成已取消");
             return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, 24000, "用户已取消");
         }
         catch (Exception ex)
         {
-            SetState(prevState, $"合成异常: {ex.Message}");
+            SetState(TtsServerState.Error, $"合成异常: {ex.Message}");
             return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, 24000, ex.Message);
         }
     }
@@ -522,12 +559,12 @@ public sealed class TtsService : IDisposable
         }
         catch (OperationCanceledException)
         {
-            SetState(prevState, "流式合成已取消");
+            SetState(TtsServerState.Ready, "流式合成已取消");
             yield break;
         }
         catch (Exception ex)
         {
-            SetState(prevState, $"流式连接异常: {ex.Message}");
+            SetState(TtsServerState.Error, $"流式连接异常: {ex.Message}");
             LogOccurred?.Invoke($"[TTS Stream] 请求连接异常: {ex.Message}");
             yield break;
         }
@@ -537,7 +574,7 @@ public sealed class TtsService : IDisposable
             if (!resp.IsSuccessStatusCode)
             {
                 string errDetail = await resp.Content.ReadAsStringAsync(ct);
-                SetState(prevState, $"流式合成失败: HTTP {(int)resp.StatusCode}");
+                SetState(TtsServerState.Error, $"流式合成失败: HTTP {(int)resp.StatusCode}");
                 LogOccurred?.Invoke($"[TTS Stream] 合成失败 (HTTP {(int)resp.StatusCode}): {errDetail}");
                 yield break;
             }
@@ -602,7 +639,7 @@ public sealed class TtsService : IDisposable
 
             sw.Stop();
             double duration = (double)totalBytes / (24000 * 2);
-            SetState(prevState, $"流式合成完成 (耗时: {sw.ElapsedMilliseconds}ms, 音频时长: {duration:F2}s, 块数: {chunkCount})");
+            SetState(TtsServerState.Ready, $"流式合成完成 (耗时: {sw.ElapsedMilliseconds}ms, 音频时长: {duration:F2}s, 块数: {chunkCount})");
             LogOccurred?.Invoke($"[TTS Stream] 流式传输结束: 共 {chunkCount} 块, 总字节: {totalBytes} ({duration:F2}s), 耗时: {sw.ElapsedMilliseconds}ms");
             SynthesisCompleted?.Invoke(rawText, duration, sw.ElapsedMilliseconds);
         }

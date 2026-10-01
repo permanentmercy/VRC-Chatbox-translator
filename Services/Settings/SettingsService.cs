@@ -594,7 +594,7 @@ public partial class SettingsService
 
         TtsActiveStateChanged?.Invoke(true);
         TtsProgressChanged?.Invoke(-1);
-        SpeechStatusUpdated?.Invoke("正在流式合成语音...");
+        TtsStatusUpdated?.Invoke("正在流式合成语音...");
 
         try
         {
@@ -607,7 +607,7 @@ public partial class SettingsService
                 TtsMonitorVolume,
                 onChunkReceived: (chunkIdx) =>
                 {
-                    SpeechStatusUpdated?.Invoke($"正在流式推流播放 (第 {chunkIdx} 块)...");
+                    TtsStatusUpdated?.Invoke($"正在流式推流播放 (第 {chunkIdx} 块)...");
                 }
             );
 
@@ -626,7 +626,7 @@ public partial class SettingsService
         {
             TtsProgressChanged?.Invoke(100);
             TtsActiveStateChanged?.Invoke(false);
-            SpeechStatusUpdated?.Invoke("就绪");
+            TtsStatusUpdated?.Invoke("就绪");
         }
     }
 
@@ -640,7 +640,7 @@ public partial class SettingsService
 
         TtsActiveStateChanged?.Invoke(true);
         TtsProgressChanged?.Invoke(-1);
-        SpeechStatusUpdated?.Invoke("正在合成试听语音...");
+        TtsStatusUpdated?.Invoke("正在合成试听语音...");
 
         try
         {
@@ -653,7 +653,7 @@ public partial class SettingsService
                 monitorVolume: TtsMonitorVolume,
                 onChunkReceived: (chunkIdx) =>
                 {
-                    SpeechStatusUpdated?.Invoke($"正在流式试听播放 (第 {chunkIdx} 块)...");
+                    TtsStatusUpdated?.Invoke($"正在流式试听播放 (第 {chunkIdx} 块)...");
                 }
             );
         }
@@ -661,7 +661,7 @@ public partial class SettingsService
         {
             TtsProgressChanged?.Invoke(100);
             TtsActiveStateChanged?.Invoke(false);
-            SpeechStatusUpdated?.Invoke("就绪");
+            TtsStatusUpdated?.Invoke("就绪");
         }
     }
 
@@ -847,6 +847,7 @@ public partial class SettingsService
     public event Action<string>? SpeechStatusUpdated;
     public event Action<bool>? TtsActiveStateChanged;
     public event Action<double>? TtsProgressChanged;
+    public event Action<string>? TtsStatusUpdated;
     public event Action? DisplaySettingsChanged;
     public event Action<string>? RequestAutoFillInput;
     public event Action<bool>? ImmersiveModeToggled;

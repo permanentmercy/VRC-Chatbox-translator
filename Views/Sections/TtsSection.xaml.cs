@@ -42,6 +42,7 @@ public sealed partial class TtsSection : UserControl
 
         TtsService.Instance.StateChanged += OnTtsServiceStateChanged;
 
+        UpdateStatusIndicator(TtsService.Instance.State, TtsService.Instance.StatusMessage);
         LoadAudioDevices();
 
         _isInitializing = false;
@@ -64,20 +65,7 @@ public sealed partial class TtsSection : UserControl
 
     private async Task RefreshEngineHealthAsync()
     {
-        var health = await TtsService.Instance.CheckHealthAsync();
-        if (health != null && health.Ready)
-        {
-            string modeDesc = health.LowVram ? "Low VRAM" : "流式全显存模式";
-            UpdateStatusIndicator(TtsServerState.Ready, $"服务就绪！(模型: {health.Model}, 模式: {modeDesc})");
-        }
-        else if (health != null && !health.Ready)
-        {
-            UpdateStatusIndicator(TtsServerState.Error, $"服务启动失败: {health.Error ?? "未知错误"}");
-        }
-        else
-        {
-            UpdateStatusIndicator(TtsServerState.Stopped, "TTS 引擎已停止 (点击右侧启动引擎)");
-        }
+        await TtsService.Instance.RefreshHealthAsync();
     }
 
     private void UpdateStatusIndicator(TtsServerState state, string message)

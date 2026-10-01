@@ -86,6 +86,7 @@ public sealed partial class ImmersiveWindow : Window
         s.RequestAutoFillInput += OnRequestAutoFillInput;
         s.TtsActiveStateChanged += OnTtsActiveStateChanged;
         s.TtsProgressChanged += OnTtsProgressChanged;
+        s.TtsStatusUpdated += OnTtsStatusUpdated;
 
         EnsureWindowPosition();
         UpdateDisplayVisibility();
@@ -107,6 +108,7 @@ public sealed partial class ImmersiveWindow : Window
         s.RequestAutoFillInput -= OnRequestAutoFillInput;
         s.TtsActiveStateChanged -= OnTtsActiveStateChanged;
         s.TtsProgressChanged -= OnTtsProgressChanged;
+        s.TtsStatusUpdated -= OnTtsStatusUpdated;
 
         RemoveWindowSubclass(_hWnd, _subclassProc, (UIntPtr)101);
     }
@@ -149,6 +151,17 @@ public sealed partial class ImmersiveWindow : Window
         });
     }
 
+    private void OnTtsStatusUpdated(string status)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                TtsStatusTextBlock.Text = status;
+            }
+        });
+    }
+
     private void OnSpeechStatusUpdated(string status)
     {
         DispatcherQueue.TryEnqueue(() =>
@@ -157,11 +170,6 @@ public sealed partial class ImmersiveWindow : Window
             if (s.IsSpeechRecognitionEnabled && string.IsNullOrWhiteSpace(s.LastRecognizedText))
             {
                 UpdateDisplayVisibility();
-            }
-
-            if (!string.IsNullOrWhiteSpace(status) && status != "就绪")
-            {
-                TtsStatusTextBlock.Text = status;
             }
         });
     }
