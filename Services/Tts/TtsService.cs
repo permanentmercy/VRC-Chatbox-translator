@@ -27,6 +27,7 @@ public sealed class TtsService : IDisposable
     private CancellationTokenSource? _activePlaybackCts;
     private readonly object _playbackLock = new();
     private readonly SemaphoreSlim _playbackQueueLock = new(1, 1);
+    private readonly SemaphoreSlim _serverStartLock = new(1, 1);
 
     public TtsServerState State { get; private set; } = TtsServerState.Stopped;
     public string StatusMessage { get; private set; } = "TTS 引擎已停止";
@@ -159,7 +160,11 @@ public sealed class TtsService : IDisposable
         }
         else
         {
-            SetState(TtsServerState.Stopped, "TTS 引擎已停止 (点击右侧启动引擎)");
+            // 守卫：如果当前正在启动中或正在合成中，绝不可随意覆写为 Stopped 导致界面按钮误点亮和二次重复启动
+            if (State != TtsServerState.Starting && State != TtsServerState.Synthesizing)
+            {
+                SetState(TtsServerState.Stopped, "TTS 引擎已停止 (点击右侧启动引擎)");
+            }
         }
         return health;
     }
@@ -169,39 +174,53 @@ public sealed class TtsService : IDisposable
     /// </summary>
     public async Task<bool> StartManagedServerAsync()
     {
-        var cfg = SettingsService.Instance.Config;
-        if (SettingsService.MigrateLegacyTtsPaths(cfg))
+        // 0. 若当前正在启动中，直接返回，避免并发重复启动导致双进程爆显存
+        if (State == TtsServerState.Starting)
         {
-            SettingsService.Instance.SaveConfigDebounced();
-        }
-
-        // 1. 先探测是否已经有运行中的服务（例如用户此前已启动或独立启动）
-        var health = await CheckHealthAsync(cfg.TtsServerEndpoint);
-        if (health != null && health.Ready)
-        {
-            SetState(TtsServerState.Ready, $"已成功连接到运行中的 IndexTTS 服务 (模型: {health.Model})");
-            return true;
-        }
-
-        // 2. 检查 Python 解释器与服务端脚本是否存在
-        if (!File.Exists(cfg.TtsPythonExePath))
-        {
-            SetState(TtsServerState.Error, $"未找到 Python 解释器: {cfg.TtsPythonExePath}");
-            return false;
-        }
-        if (!File.Exists(cfg.TtsServerScriptPath))
-        {
-            SetState(TtsServerState.Error, $"未找到服务端脚本: {cfg.TtsServerScriptPath}");
+            LogOccurred?.Invoke("[Server] 引擎正在启动中，请等待其加载完成，无需重复发起启动。");
             return false;
         }
 
-        // 3. 启动后台静默进程
-        StopManagedServer();
-
-        SetState(TtsServerState.Starting, "正在启动 IndexTTS 后台微服务并载入专属微调模型 (耗时约 5~8 秒)...");
-
+        await _serverStartLock.WaitAsync();
         try
         {
+            if (State == TtsServerState.Starting)
+            {
+                return false;
+            }
+
+            var cfg = SettingsService.Instance.Config;
+            if (SettingsService.MigrateLegacyTtsPaths(cfg))
+            {
+                SettingsService.Instance.SaveConfigDebounced();
+            }
+
+            // 1. 先探测是否已经有运行中的服务（例如用户此前已启动或独立启动）
+            var health = await CheckHealthAsync(cfg.TtsServerEndpoint);
+            if (health != null && health.Ready)
+            {
+                string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
+                SetState(TtsServerState.Ready, $"已成功连接到运行中的 IndexTTS 服务 (模型: {health.Model}, {modeDesc})");
+                return true;
+            }
+
+            // 2. 检查 Python 解释器与服务端脚本是否存在
+            if (!File.Exists(cfg.TtsPythonExePath))
+            {
+                SetState(TtsServerState.Error, $"未找到 Python 解释器: {cfg.TtsPythonExePath}");
+                return false;
+            }
+            if (!File.Exists(cfg.TtsServerScriptPath))
+            {
+                SetState(TtsServerState.Error, $"未找到服务端脚本: {cfg.TtsServerScriptPath}");
+                return false;
+            }
+
+            // 3. 启动后台静默进程前彻底清理所有旧残留
+            StopManagedServer();
+
+            SetState(TtsServerState.Starting, "正在启动 IndexTTS 后台微服务并载入专属微调模型 (耗时约 15~20 秒)...");
+
             string workDir = Path.GetDirectoryName(cfg.TtsServerScriptPath) ?? "";
             var psi = new ProcessStartInfo
             {
@@ -292,10 +311,14 @@ public sealed class TtsService : IDisposable
             SetState(TtsServerState.Error, $"启动异常: {ex.Message}");
             return false;
         }
+        finally
+        {
+            _serverStartLock.Release();
+        }
     }
 
     /// <summary>
-    /// 停止托管的 Python 后台进程，并清理占用 TTS 端口的残留进程
+    /// 停止托管的 Python 后台进程，并清理占用 TTS 端口及残留的 tts_server 孤儿进程
     /// </summary>
     public void StopManagedServer()
     {
@@ -322,8 +345,7 @@ public sealed class TtsService : IDisposable
             }
         }
 
-        // 2. 兜底：通过端口号查找并杀死占用 TTS 服务端口的所有残留进程
-        // 解决以下场景：StartManagedServerAsync 探测到已有服务直接复用但未保存 _serverProcess
+        // 2. 通过端口号查找并杀死占用 TTS 服务端口的所有残留进程
         try
         {
             int port = SettingsService.Instance.Config.TtsServerPort;
@@ -331,7 +353,30 @@ public sealed class TtsService : IDisposable
         }
         catch { }
 
+        // 3. 兜底清理：查杀任何可能处于启动窗口期（尚未绑定 9880 端口）的 tts_server.py 孤儿 Python 进程
+        KillOrphanPythonServerProcesses();
+
         SetState(TtsServerState.Stopped, "TTS 引擎已停止");
+    }
+
+    /// <summary>
+    /// 兜底终止任何命令行包含 tts_server.py 的 Python 孤儿进程，杜绝未绑端口时的后台多进程堆积
+    /// </summary>
+    private static void KillOrphanPythonServerProcesses()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*python*' -and $_.CommandLine -like '*tts_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            p?.WaitForExit(3000);
+        }
+        catch { }
     }
 
     /// <summary>
@@ -535,7 +580,7 @@ public sealed class TtsService : IDisposable
         }
 
         var cfg = SettingsService.Instance.Config;
-        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm&first_chunk_frames=16";
+        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm";
 
         var prevState = State;
         SetState(TtsServerState.Synthesizing, $"正在流式合成语音: \"{rawText}\"...");

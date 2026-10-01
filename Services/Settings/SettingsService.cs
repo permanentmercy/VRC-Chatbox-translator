@@ -579,6 +579,10 @@ public partial class SettingsService
         set { if (Config.IsTtsAutoReadTranslation != value) { Config.IsTtsAutoReadTranslation = value; SaveConfigDebounced(); } }
     }
 
+    private string _lastTtsSpokenText = string.Empty;
+    private DateTime _lastTtsSpokenTime = DateTime.MinValue;
+    private readonly object _ttsDebounceLock = new();
+
     /// <summary>
     /// 流式推流管线：直接向 IndexTTS 发起 /tts/stream 流式输出请求，首块到达立即唤醒声卡推流，后续音频流在后台边生成边播放
     /// </summary>
@@ -591,6 +595,30 @@ public partial class SettingsService
 
         string cleanText = PrepareTextForTts(text);
         if (string.IsNullOrWhiteSpace(cleanText)) return false;
+
+        // 短时间内相同文本防抖去重：避免连续回车或事件重入导致同一段文本被反复发送挤爆显存
+        if (!force)
+        {
+            lock (_ttsDebounceLock)
+            {
+                if (string.Equals(cleanText, _lastTtsSpokenText, StringComparison.Ordinal) &&
+                    (DateTime.UtcNow - _lastTtsSpokenTime).TotalMilliseconds < 1500)
+                {
+                    AddLog("TTS Debounce", $"忽略 1.5 秒内对相同文本的重复推流请求: \"{cleanText}\"", true);
+                    return false;
+                }
+                _lastTtsSpokenText = cleanText;
+                _lastTtsSpokenTime = DateTime.UtcNow;
+            }
+        }
+        else
+        {
+            lock (_ttsDebounceLock)
+            {
+                _lastTtsSpokenText = cleanText;
+                _lastTtsSpokenTime = DateTime.UtcNow;
+            }
+        }
 
         TtsActiveStateChanged?.Invoke(true);
         TtsProgressChanged?.Invoke(-1);
@@ -637,6 +665,18 @@ public partial class SettingsService
     {
         string cleanText = PrepareTextForTts(text);
         if (string.IsNullOrWhiteSpace(cleanText)) return false;
+
+        lock (_ttsDebounceLock)
+        {
+            if (string.Equals(cleanText, _lastTtsSpokenText, StringComparison.Ordinal) &&
+                (DateTime.UtcNow - _lastTtsSpokenTime).TotalMilliseconds < 1500)
+            {
+                AddLog("TTS Debounce", $"忽略 1.5 秒内对相同试听文本的重复请求: \"{cleanText}\"", true);
+                return false;
+            }
+            _lastTtsSpokenText = cleanText;
+            _lastTtsSpokenTime = DateTime.UtcNow;
+        }
 
         TtsActiveStateChanged?.Invoke(true);
         TtsProgressChanged?.Invoke(-1);

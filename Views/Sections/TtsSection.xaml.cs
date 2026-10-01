@@ -47,7 +47,10 @@ public sealed partial class TtsSection : UserControl
 
         _isInitializing = false;
 
-        await RefreshEngineHealthAsync();
+        if (TtsService.Instance.State != TtsServerState.Starting)
+        {
+            await RefreshEngineHealthAsync();
+        }
     }
 
     private void TtsSection_Unloaded(object sender, RoutedEventArgs e)
@@ -224,6 +227,7 @@ public sealed partial class TtsSection : UserControl
 
     private async void StartServerButton_Click(object sender, RoutedEventArgs e)
     {
+        if (TtsService.Instance.State == TtsServerState.Starting) return;
         StartServerButton.IsEnabled = false;
         await TtsService.Instance.StartManagedServerAsync();
     }
