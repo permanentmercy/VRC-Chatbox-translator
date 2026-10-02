@@ -15,6 +15,7 @@ public sealed partial class TtsSection : UserControl
 {
     private bool _isInitializing = true;
     private List<TtsDeviceInfo> _devices = new();
+    private List<TtsModelOption> _modelOptions = new();
 
     public TtsSection()
     {
@@ -30,7 +31,7 @@ public sealed partial class TtsSection : UserControl
 
         TtsEnableSwitch.IsOn = s.IsTtsEnabled;
         ServerEndpointTextBox.Text = s.TtsServerEndpoint;
-        ModelNameTextBox.Text = s.TtsModelName;
+        LoadModelOptions();
         AutoStartServerCheckBox.IsChecked = s.AutoStartTtsServer;
 
         MicVolumeSlider.Value = Math.Round(s.TtsOutputVolume * 100);
@@ -50,6 +51,8 @@ public sealed partial class TtsSection : UserControl
         if (TtsService.Instance.State != TtsServerState.Starting)
         {
             await RefreshEngineHealthAsync();
+            // 健康检查会带回服务端注册的权重列表，据此刷新"要不要重启"的提示
+            UpdateModelHint();
         }
     }
 
@@ -74,6 +77,8 @@ public sealed partial class TtsSection : UserControl
     private void UpdateStatusIndicator(TtsServerState state, string message)
     {
         ServerStatusTextBlock.Text = message;
+        // 引擎启停会改变"所选权重是否已注册"，同步刷新那行提示
+        UpdateModelHint();
 
         switch (state)
         {
@@ -106,6 +111,117 @@ public sealed partial class TtsSection : UserControl
                 StopServerButton.IsEnabled = false;
                 break;
         }
+    }
+
+    // ------------------------------------------------------------------ //
+    // 推理权重选择
+    // ------------------------------------------------------------------ //
+
+    /// <summary>
+    /// 扫描 checkpoints 目录填充下拉菜单。
+    ///
+    /// 配置里保存的权重若已经不在目录里（被删/改名），仍然把它放在列表首位并标注，
+    /// 避免设置项"凭空消失"让用户以为软件坏了。
+    /// </summary>
+    private void LoadModelOptions()
+    {
+        string saved = SettingsService.Instance.TtsModelName;
+        _modelOptions = TtsService.Instance.DiscoverModels();
+
+        ModelNameComboBox.Items.Clear();
+        foreach (var m in _modelOptions)
+        {
+            ModelNameComboBox.Items.Add(new ComboBoxItem
+            {
+                Content = m.DisplayName,
+                Tag = m.FileName
+            });
+        }
+
+        int idx = _modelOptions.FindIndex(
+            m => string.Equals(m.FileName, saved, StringComparison.OrdinalIgnoreCase));
+
+        if (idx < 0)
+        {
+            ModelNameComboBox.Items.Insert(0, new ComboBoxItem
+            {
+                Content = $"{saved}    (未在 checkpoints 目录中找到)",
+                Tag = saved
+            });
+            idx = 0;
+        }
+
+        if (ModelNameComboBox.Items.Count > 0)
+        {
+            ModelNameComboBox.SelectedIndex = Math.Clamp(idx, 0, ModelNameComboBox.Items.Count - 1);
+        }
+        UpdateModelHint();
+    }
+
+    /// <summary>
+    /// 刷新下拉框下方那行说明：权重体积/类型，以及"当前引擎要不要重启"
+    /// </summary>
+    private void UpdateModelHint()
+    {
+        if (ModelHintTextBlock is null) return;
+
+        if (ModelNameComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string file)
+        {
+            ModelHintTextBlock.Text = "未发现可用的推理权重，请检查 checkpoints 目录是否已放置 .pth 权重。";
+            return;
+        }
+
+        var opt = _modelOptions.Find(
+            m => string.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase));
+        string detail = opt != null ? opt.Description : "该权重不在 checkpoints 目录中";
+
+        // 只有引擎在跑的时候才需要关心"切换要不要重启"
+        bool running = TtsService.Instance.State is TtsServerState.Ready
+                                                  or TtsServerState.Synthesizing
+                                                  or TtsServerState.Starting;
+
+        if (running && !TtsService.Instance.IsModelRegistered(file))
+        {
+            detail += "，当前引擎未注册该权重，需重启引擎后生效";
+        }
+        else if (running)
+        {
+            detail += "，切换后下次合成立即生效（无需重启）";
+        }
+
+        ModelHintTextBlock.Text = detail;
+    }
+
+    private void ModelNameComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        if (ModelNameComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string file) return;
+
+        SettingsService.Instance.TtsModelName = file;
+        UpdateModelHint();
+
+        if (TtsService.Instance.IsModelRegistered(file))
+        {
+            SettingsService.Instance.AddLog(
+                "TTS", $"推理权重已切换为 {file}（服务端已注册该变体，下次合成立即生效）", true);
+        }
+        else if (TtsService.Instance.State is TtsServerState.Ready or TtsServerState.Synthesizing)
+        {
+            SettingsService.Instance.AddLog(
+                "TTS", $"推理权重已切换为 {file}，但当前运行的引擎没有注册该变体，" +
+                       $"请先「停止引擎」再「启动引擎」", true);
+        }
+        else
+        {
+            SettingsService.Instance.AddLog("TTS", $"推理权重已设为 {file}", true);
+        }
+    }
+
+    private void RefreshModelsButton_Click(object sender, RoutedEventArgs e)
+    {
+        LoadModelOptions();
+        SettingsService.Instance.AddLog(
+            "TTS", $"已重新扫描 checkpoints 目录，发现 {_modelOptions.Count} 个推理权重", true);
     }
 
     private void LoadAudioDevices()

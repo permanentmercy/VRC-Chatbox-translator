@@ -29,8 +29,21 @@ public sealed class TtsService : IDisposable
     private readonly SemaphoreSlim _playbackQueueLock = new(1, 1);
     private readonly SemaphoreSlim _serverStartLock = new(1, 1);
 
+    /// <summary>当前服务端注册过的权重别名；null 表示服务端不支持变体切换</summary>
+    private volatile List<string>? _registeredModelAliases;
+
     public TtsServerState State { get; private set; } = TtsServerState.Stopped;
     public string StatusMessage { get; private set; } = "TTS 引擎已停止";
+
+    /// <summary>
+    /// 服务端是否已经注册了指定权重变体（只有注册过，请求里带 model 才是安全的）
+    /// </summary>
+    public bool IsModelRegistered(string? fileName)
+    {
+        var aliases = _registeredModelAliases;
+        if (aliases == null || string.IsNullOrWhiteSpace(fileName)) return false;
+        return aliases.Contains(fileName, StringComparer.OrdinalIgnoreCase);
+    }
 
     public event Action<TtsServerState, string>? StateChanged;
     public event Action<string, double, long>? SynthesisCompleted;
@@ -101,6 +114,112 @@ public sealed class TtsService : IDisposable
         return devices;
     }
 
+    // ======================================================================
+    // 推理权重发现
+    // ======================================================================
+
+    /// <summary>
+    /// 定位 checkpoints 目录：与 tts_server.py 同级（IndexTTS 仓库的权重目录）
+    /// </summary>
+    public static string? ResolveCheckpointsDir(string? serverScriptPath = null)
+    {
+        string script = serverScriptPath ?? SettingsService.Instance.Config.TtsServerScriptPath;
+        if (string.IsNullOrWhiteSpace(script)) return null;
+
+        string? dir = Path.GetDirectoryName(script);
+        if (string.IsNullOrEmpty(dir)) return null;
+
+        return Path.Combine(dir, "checkpoints");
+    }
+
+    /// <summary>
+    /// 扫描 checkpoints 目录里所有可用的 **GPT 主干权重**。
+    ///
+    /// 排除项：``bigvgan_*`` / ``dvae*`` 是声码器与 DVAE 权重，不是可切换的推理权重。
+    /// 是否 FP8 量化由同名的 ``.json`` 边车文件（``tools/quantize_gpt.py`` 产出）判断。
+    /// </summary>
+    public List<TtsModelOption> DiscoverModels(string? serverScriptPath = null)
+    {
+        var list = new List<TtsModelOption>();
+        string? dir = ResolveCheckpointsDir(serverScriptPath);
+
+        if (dir == null || !Directory.Exists(dir))
+        {
+            LogOccurred?.Invoke($"未找到 checkpoints 目录: {dir ?? "(路径无效)"}");
+            return list;
+        }
+
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(dir, "*.pth"))
+            {
+                string name = Path.GetFileName(path);
+                string lower = name.ToLowerInvariant();
+
+                // 声码器 / DVAE 权重不是 GPT 推理权重，跳过
+                if (lower.StartsWith("bigvgan") || lower.StartsWith("dvae")) continue;
+
+                long size = 0;
+                try { size = new FileInfo(path).Length; } catch { }
+
+                bool quantized = IsQuantizedCheckpoint(path);
+
+                string sizeText = size > 0 ? $"{size / 1024.0 / 1024 / 1024:F2} GB" : "大小未知";
+                string tag = quantized
+                    ? "FP8 量化 · 省显存"
+                    : size >= 1_500_000_000L
+                        ? "fp32 原始 · 加载后转 fp16"
+                        : "fp16";
+
+                string desc = $"{sizeText} · {tag}";
+                if (quantized)
+                {
+                    desc += " · 音色与 fp16 有细微差别，可自行试听对比";
+                }
+
+                list.Add(new TtsModelOption(
+                    FileName: name,
+                    DisplayName: $"{name}    ({desc})",
+                    Description: desc,
+                    SizeBytes: size,
+                    IsQuantized: quantized));
+            }
+
+            // 优先推荐 fp16/q8 这类紧凑权重，原版 fp32 排最后
+            list.Sort((a, b) =>
+            {
+                if (a.IsQuantized != b.IsQuantized) return a.IsQuantized ? -1 : 1;
+                return string.Compare(a.FileName, b.FileName, StringComparison.OrdinalIgnoreCase);
+            });
+        }
+        catch (Exception ex)
+        {
+            LogOccurred?.Invoke($"扫描权重目录异常: {ex.Message}");
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 判断某个 checkpoint 是否是 FP8 量化版（看同名 .json 边车里的 format 字段）
+    /// </summary>
+    private static bool IsQuantizedCheckpoint(string checkpointPath)
+    {
+        try
+        {
+            string metaPath = Path.ChangeExtension(checkpointPath, ".json");
+            if (!File.Exists(metaPath)) return false;
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
+            return doc.RootElement.TryGetProperty("format", out var fmt) &&
+                   (fmt.GetString() ?? "").Contains("fp8", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool IsVirtualAudioDevice(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
@@ -135,7 +254,22 @@ public sealed class TtsService : IDisposable
                 bool lowVram = root.TryGetProperty("low_vram", out var lv) && lv.GetBoolean();
                 string? err = root.TryGetProperty("error", out var e) ? e.GetString() : null;
 
-                return new TtsHealthStatus(status, ready, model, lowVram, err);
+                // 服务端通过 --models 注册的权重别名列表。老版本脚本没有这一段，
+                // 此时保持 null，调用方就不会给请求带 model 字段。
+                List<string>? aliases = null;
+                if (root.TryGetProperty("models", out var mreg) && mreg.ValueKind == JsonValueKind.Object &&
+                    mreg.TryGetProperty("models", out var mlist) && mlist.ValueKind == JsonValueKind.Array)
+                {
+                    aliases = new List<string>();
+                    foreach (var a in mlist.EnumerateArray())
+                    {
+                        string? v = a.GetString();
+                        if (!string.IsNullOrWhiteSpace(v)) aliases.Add(v);
+                    }
+                }
+                _registeredModelAliases = aliases;
+
+                return new TtsHealthStatus(status, ready, model, lowVram, err, aliases);
             }
         }
         catch { }
@@ -222,10 +356,17 @@ public sealed class TtsService : IDisposable
             SetState(TtsServerState.Starting, "正在启动 IndexTTS 后台服务并加载模型 (耗时约 15~20 秒)...");
 
             string workDir = Path.GetDirectoryName(cfg.TtsServerScriptPath) ?? "";
+
+            // 把所有扫描到的权重一次性注册给服务端（--models 别名=文件名）。
+            // 这样界面上切换权重时服务端只需要重载 GPT 主干（几秒），不用整个重启（十几秒）。
+            // 服务端不支持 --models 时会忽略（脚本用 parse_known_args），退化成只认 --model。
+            string registryArgs = BuildModelRegistryArgs(cfg.TtsModelName, cfg.TtsServerScriptPath);
+
             var psi = new ProcessStartInfo
             {
                 FileName = cfg.TtsPythonExePath,
-                Arguments = $"\"{cfg.TtsServerScriptPath}\" --port {cfg.TtsServerPort} --model \"{cfg.TtsModelName}\"",
+                Arguments = $"\"{cfg.TtsServerScriptPath}\" --port {cfg.TtsServerPort} " +
+                            $"--model \"{cfg.TtsModelName}\"{registryArgs}",
                 WorkingDirectory = workDir,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -314,6 +455,43 @@ public sealed class TtsService : IDisposable
         finally
         {
             _serverStartLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 拼出 ``--models "a.pth=a.pth,b.pth=b.pth" --default-model "a.pth"`` 参数串。
+    ///
+    /// 别名直接就用文件名，省掉一层映射。若当前选中的权重不在目录里（文件被删/改名），
+    /// **必须省略 --default-model** —— 服务端会因为别名不在注册表里直接抛异常退出。
+    /// </summary>
+    private string BuildModelRegistryArgs(string selectedModel, string? serverScriptPath)
+    {
+        try
+        {
+            var models = DiscoverModels(serverScriptPath);
+            if (models.Count == 0) return string.Empty;
+
+            string registry = string.Join(",", models.Select(m => $"{m.FileName}={m.FileName}"));
+            string args = $" --models \"{registry}\"";
+
+            bool selectedExists = models.Any(
+                m => string.Equals(m.FileName, selectedModel, StringComparison.OrdinalIgnoreCase));
+            if (selectedExists)
+            {
+                args += $" --default-model \"{selectedModel}\"";
+            }
+            else
+            {
+                LogOccurred?.Invoke(
+                    $"[Server] 配置里的权重 {selectedModel} 不在 checkpoints 目录中，" +
+                    $"本次以第一个可用权重作为默认值。");
+            }
+            return args;
+        }
+        catch (Exception ex)
+        {
+            LogOccurred?.Invoke($"[Server] 组装权重注册表失败，退回单模型模式: {ex.Message}");
+            return string.Empty;
         }
     }
 
@@ -434,6 +612,18 @@ public sealed class TtsService : IDisposable
     }
 
     /// <summary>
+    /// 本次请求要用的权重别名。
+    ///
+    /// **只有服务端明确注册过该别名才返回它**，否则返回 null（让服务端用它自己的默认权重）：
+    /// 手工启动的旧版服务端拿到未注册的别名会直接报错，宁可少带一个字段也不能让合成失败。
+    /// </summary>
+    private string? ResolveRequestModelAlias()
+    {
+        string selected = SettingsService.Instance.Config.TtsModelName;
+        return IsModelRegistered(selected) ? selected : null;
+    }
+
+    /// <summary>
     /// 请求 IndexTTS 服务合成语音（免参考音频，纯模型推理）
     /// </summary>
     public async Task<TtsSynthesisResult> SynthesizeAsync(string text, CancellationToken ct = default)
@@ -456,7 +646,8 @@ public sealed class TtsService : IDisposable
             var reqObj = new
             {
                 text = rawText,
-                audio_prompt = (string?)null // 强制传 null，指示服务端使用模型内置专属微调音色纯推理，不读任何参考音频
+                audio_prompt = (string?)null, // 强制传 null，指示服务端使用模型内置专属微调音色纯推理，不读任何参考音频
+                model = ResolveRequestModelAlias()
             };
             string reqJson = JsonSerializer.Serialize(reqObj);
             using var content = new StringContent(reqJson, Encoding.UTF8, "application/json");
@@ -589,7 +780,8 @@ public sealed class TtsService : IDisposable
         {
             text = rawText,
             audio_prompt = (string?)null, // 免参考音频，自动使用微调专属音色
-            do_sample = false            // 贪心解码：2.5倍提速，消除首字出声漫长等待
+            do_sample = false,           // 贪心解码：2.5倍提速，消除首字出声漫长等待
+            model = ResolveRequestModelAlias()
         };
         string reqJson = JsonSerializer.Serialize(reqObj);
         using var request = new HttpRequestMessage(HttpMethod.Post, streamUrl)

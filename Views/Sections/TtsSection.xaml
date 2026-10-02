@@ -62,16 +62,37 @@
                 <Grid ColumnSpacing="20" RowSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="340" />
-                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
                     <TextBox x:Name="ServerEndpointTextBox" Header="TTS 服务端点 (REST API)"
                              Text="http://127.0.0.1:9880"
                              TextChanged="ServerEndpointTextBox_TextChanged" />
 
-                    <TextBox x:Name="ModelNameTextBox" Grid.Column="1" Header="模型权重文件名"
-                             Text="gpt_me_lora.pth" IsReadOnly="True"
-                             ToolTipService.ToolTip="由 tts_server.py 启动时加载的模型权重文件，需与脚本配置保持一致" />
+                    <StackPanel Grid.Column="1" Spacing="4">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <ComboBox x:Name="ModelNameComboBox"
+                                      Header="推理权重 (自动扫描 checkpoints 目录)"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="ModelNameComboBox_SelectionChanged"
+                                      ToolTipService.ToolTip="选择启动引擎时加载、以及每次合成请求使用的 GPT 权重。切换后无需重启引擎即可生效（服务端只重载 GPT 主干）。" />
+
+                            <Button x:Name="RefreshModelsButton" Grid.Column="1"
+                                    Content="刷新" VerticalAlignment="Bottom"
+                                    Click="RefreshModelsButton_Click"
+                                    ToolTipService.ToolTip="重新扫描 checkpoints 目录，用于新量化/微调权重产出后立即选用" />
+                        </Grid>
+
+                        <TextBlock x:Name="ModelHintTextBlock"
+                                   TextWrapping="Wrap"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
                 </Grid>
 
                 <CheckBox x:Name="AutoStartServerCheckBox"
