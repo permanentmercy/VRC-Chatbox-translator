@@ -27,6 +27,7 @@ public sealed partial class TranslationSection : UserControl
         InitTargetLanguage(s.TargetLanguage);
 
         OllamaPromptTextBox.Text = s.OllamaPromptTemplate;
+        InitRequestFrequency(s.OllamaRequestFrequency);
 
         ShowRecognizedTextSwitch.IsOn = s.ShowRecognizedText;
         ShowTranslatedTextSwitch.IsOn = s.ShowTranslatedText;
@@ -49,6 +50,61 @@ public sealed partial class TranslationSection : UserControl
             }
         }
         TargetLanguageComboBox.SelectedIndex = 0;
+    }
+
+    /// <summary>
+    /// 填充「Ollama 请求频率」下拉框。选项表来自 SettingsService，避免 UI 与
+    /// 节流逻辑各写一份档位定义而对不上。
+    /// </summary>
+    private void InitRequestFrequency(string currentMode)
+    {
+        RequestFrequencyComboBox.Items.Clear();
+        foreach (var opt in SettingsService.RequestFrequencyOptions)
+        {
+            RequestFrequencyComboBox.Items.Add(new ComboBoxItem
+            {
+                Content = opt.Label,
+                Tag = opt.Mode
+            });
+        }
+
+        var resolved = SettingsService.ResolveRequestFrequency(currentMode);
+        for (int i = 0; i < RequestFrequencyComboBox.Items.Count; i++)
+        {
+            if (RequestFrequencyComboBox.Items[i] is ComboBoxItem item &&
+                item.Tag is string mode &&
+                string.Equals(mode, resolved.Mode, StringComparison.OrdinalIgnoreCase))
+            {
+                RequestFrequencyComboBox.SelectedIndex = i;
+                break;
+            }
+        }
+        if (RequestFrequencyComboBox.SelectedIndex < 0)
+        {
+            RequestFrequencyComboBox.SelectedIndex = 0;
+        }
+
+        UpdateRequestFrequencyHint();
+    }
+
+    private void UpdateRequestFrequencyHint()
+    {
+        if (RequestFrequencyHintTextBlock is null) return;
+
+        var opt = SettingsService.ResolveRequestFrequency(
+            (RequestFrequencyComboBox.SelectedItem as ComboBoxItem)?.Tag as string);
+
+        if (opt.IntervalMs <= 0)
+        {
+            RequestFrequencyHintTextBlock.Text =
+                "不做假说预翻译：只有在语音识别定稿后才会请求 Ollama，最省资源，但说话过程中字幕不会提前显示译文。";
+        }
+        else
+        {
+            RequestFrequencyHintTextBlock.Text =
+                $"最快每 {opt.IntervalMs / 1000.0:0.0#} 秒发一次请求，且内容至少比上次多 {opt.MinNewChars} 个字才触发。" +
+                "频率越高字幕越跟手，对本地模型压力也越大（定稿句的翻译不受影响，永远只发一次）。";
+        }
     }
 
     private async Task LoadOllamaModelsAsync()
@@ -170,6 +226,21 @@ public sealed partial class TranslationSection : UserControl
     private async void RefreshModelsButton_Click(object sender, RoutedEventArgs e)
     {
         await LoadOllamaModelsAsync();
+    }
+
+    private void RequestFrequencyComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        if (RequestFrequencyComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string mode) return;
+
+        SettingsService.Instance.OllamaRequestFrequency = mode;
+        UpdateRequestFrequencyHint();
+
+        var opt = SettingsService.ResolveRequestFrequency(mode);
+        string detail = opt.IntervalMs <= 0
+            ? "关闭假说预翻译"
+            : $"每 {opt.IntervalMs}ms 最多一次，最少新增 {opt.MinNewChars} 字";
+        SettingsService.Instance.AddLog("Translation", $"Ollama 请求频率已设为「{opt.Label}」（{detail}）", true);
     }
 
     private void TargetLanguageComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

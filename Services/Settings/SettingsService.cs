@@ -491,6 +491,17 @@ public partial class SettingsService
         get => Config.OllamaModel;
         set { if (Config.OllamaModel != value) { Config.OllamaModel = value; SaveConfigDebounced(); } }
     }
+
+    /// <summary>
+    /// Ollama 请求频率档位（语音假说预翻译的节流）。
+    /// 档位到「最小间隔 / 最小新增字数」的映射见
+    /// <see cref="RequestFrequencyOptions"/> 与 <see cref="ResolveRequestFrequency"/>。
+    /// </summary>
+    public string OllamaRequestFrequency
+    {
+        get => Config.OllamaRequestFrequency;
+        set { if (Config.OllamaRequestFrequency != value) { Config.OllamaRequestFrequency = value; SaveConfigDebounced(); } }
+    }
     public string TargetLanguage
     {
         get => Config.TargetLanguage;

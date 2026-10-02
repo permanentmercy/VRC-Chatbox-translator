@@ -73,10 +73,66 @@ public partial class SettingsService
         TryTriggerInterimTranslation(interimText);
     }
 
+    // ======================================================================
+    // Ollama 请求频率档位
+    //
+    // 说话过程中语音识别会不断吐出「假说」文本，若每次变化都去请求 Ollama，
+    // 本地模型会被打满、反而拖慢识别与字幕刷新。所以按档位控制两个门槛：
+    //   IntervalMs   —— 距离上次预翻译的最小间隔
+    //   MinNewChars  —— 相比上次预翻译至少要多出几个字（避免同一个半句反复翻译）
+    // 「定稿句」的翻译不经过这里，永远只发一次，不受档位影响。
+    // ======================================================================
+
+    public readonly record struct RequestFrequencyOption(
+        string Mode, string Label, int IntervalMs, int MinNewChars);
+
+    /// <summary>默认档位。0.8 秒 / 3 字，与加入本设置之前写死的节流参数完全一致。</summary>
+    public const string DefaultRequestFrequencyMode = "Normal";
+
+    /// <summary>
+    /// 可选档位。IntervalMs &lt;= 0 表示关闭假说预翻译。
+    /// 顺序即下拉框的显示顺序。
+    /// </summary>
+    public static readonly IReadOnlyList<RequestFrequencyOption> RequestFrequencyOptions = new[]
+    {
+        new RequestFrequencyOption("Off",    "关闭（只翻译定稿句，最省资源）", 0,    int.MaxValue),
+        new RequestFrequencyOption("Low",    "低频（2.0 秒 / 次）",            2000, 8),
+        new RequestFrequencyOption("Normal", "标准（0.8 秒 / 次，默认）",      800,  3),
+        new RequestFrequencyOption("High",   "偏高（0.4 秒 / 次）",            400,  2),
+        new RequestFrequencyOption("Ultra",  "高频（0.2 秒 / 次，最跟手）",    200,  1),
+    };
+
+    /// <summary>
+    /// 把配置里的档位字符串解析成具体参数；无法识别时回退到「标准」。
+    /// </summary>
+    public static RequestFrequencyOption ResolveRequestFrequency(string? mode)
+    {
+        if (!string.IsNullOrWhiteSpace(mode))
+        {
+            foreach (var opt in RequestFrequencyOptions)
+            {
+                if (string.Equals(opt.Mode, mode, StringComparison.OrdinalIgnoreCase))
+                {
+                    return opt;
+                }
+            }
+        }
+        // 按名字回退到「标准」，而不是写死下标，免得以后调整档位顺序时踩坑
+        foreach (var opt in RequestFrequencyOptions)
+        {
+            if (opt.Mode == DefaultRequestFrequencyMode) return opt;
+        }
+        return RequestFrequencyOptions[0];
+    }
+
     private void TryTriggerInterimTranslation(string? interimText)
     {
         if (!IsTranslationEnabled) return;
         if (string.IsNullOrWhiteSpace(interimText)) return;
+
+        // 请求频率档位：Off 档直接不做假说预翻译
+        var freq = ResolveRequestFrequency(OllamaRequestFrequency);
+        if (freq.IntervalMs <= 0) return;
 
         string clean = interimText.Replace("\r", "").Replace("\n", " ").Trim();
         if (string.IsNullOrWhiteSpace(clean)) return;
@@ -88,17 +144,17 @@ public partial class SettingsService
         bool isHalfway = hasComma || clean.Length >= 6;
         if (!isHalfway) return;
 
-        // 防抖节流检查：距离上次发起预翻译至少 800ms，且内容相较于上次预翻译新增 >= 3 个字（或者产生新标点）
+        // 防抖节流检查：按当前档位要求的最小间隔 + 最小新增字数
         DateTime now = DateTime.UtcNow;
         lock (_translationLock)
         {
-            if (now - _lastInterimTranslationTime < TimeSpan.FromMilliseconds(800))
+            if (now - _lastInterimTranslationTime < TimeSpan.FromMilliseconds(freq.IntervalMs))
             {
                 return;
             }
 
             if (!string.IsNullOrEmpty(_lastInterimTranslationText) &&
-                clean.Length < _lastInterimTranslationText.Length + 3 &&
+                clean.Length < _lastInterimTranslationText.Length + freq.MinNewChars &&
                 clean.EndsWith(_lastInterimTranslationText, StringComparison.Ordinal))
             {
                 return;

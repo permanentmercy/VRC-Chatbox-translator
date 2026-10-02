@@ -96,6 +96,14 @@ public class AppConfig
     public string TargetLanguage { get; set; } = "英语 (English)";
     public string OllamaPromptTemplate { get; set; } = SettingsService.DefaultOllamaPromptTemplate;
 
+    /// <summary>
+    /// Ollama 请求频率档位（语音假说预翻译的节流）。
+    /// 取值见 <see cref="SettingsService.RequestFrequencyOptions"/>：
+    /// "Off" / "Low" / "Normal" / "High" / "Ultra"，默认 "Normal"（0.8 秒一次）。
+    /// 定稿句的翻译不受此开关影响，永远只发一次。
+    /// </summary>
+    public string OllamaRequestFrequency { get; set; } = SettingsService.DefaultRequestFrequencyMode;
+
     // ==========================================
     // 外部 Inbound 服务端口与设置
     // ==========================================

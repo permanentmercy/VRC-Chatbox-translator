@@ -33,6 +33,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <TextBox x:Name="OllamaEndpointTextBox" Header="Ollama API 端点" Text="http://127.0.0.1:11434"
@@ -68,7 +69,20 @@
                                 Content="测试翻译" Click="TestTranslationButton_Click" Margin="0,0,0,1" />
                     </Grid>
 
-                    <TextBlock x:Name="OllamaStatusTextBlock" Grid.Row="2" Grid.ColumnSpan="2"
+                    <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Spacing="4"
+                                Width="580" HorizontalAlignment="Left">
+                        <ComboBox x:Name="RequestFrequencyComboBox"
+                                  Header="Ollama 请求频率（假说预翻译节流）"
+                                  HorizontalAlignment="Stretch"
+                                  SelectionChanged="RequestFrequencyComboBox_SelectionChanged"
+                                  ToolTipService.ToolTip="说话过程中语音识别会不断更新中间结果，频率越高字幕越跟手，但对本地 Ollama 的压力也越大。定稿句的翻译永远只发一次，不受此设置影响。" />
+                        <TextBlock x:Name="RequestFrequencyHintTextBlock"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <TextBlock x:Name="OllamaStatusTextBlock" Grid.Row="3" Grid.ColumnSpan="2"
                                IsHitTestVisible="False"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
