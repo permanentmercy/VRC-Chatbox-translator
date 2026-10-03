@@ -149,6 +149,10 @@ public sealed class TtsService : IDisposable
             return list;
         }
 
+        // 音色特征目录：服务端按 "prompts/<权重名>_prompt.pt" 的约定去找配套音色。
+        // 没有配套文件的话，切换权重后声线不会变（会回退到默认音色），这里要在 UI 上说清楚。
+        string promptDir = Path.Combine(Path.GetDirectoryName(dir) ?? "", "prompts");
+
         try
         {
             foreach (var path in Directory.EnumerateFiles(dir, "*.pth"))
@@ -164,6 +168,14 @@ public sealed class TtsService : IDisposable
 
                 bool quantized = IsQuantizedCheckpoint(path);
 
+                // 是否配套了音色特征文件
+                string stem = Path.GetFileNameWithoutExtension(name);
+                bool hasPrompt = !string.IsNullOrEmpty(stem) &&
+                                 File.Exists(Path.Combine(promptDir, stem + "_prompt.pt"));
+
+                // gpt.pth 之类没带 lora 后缀的，视为未微调的原始底模
+                bool isBase = !lower.Contains("lora");
+
                 string sizeText = size > 0 ? $"{size / 1024.0 / 1024 / 1024:F2} GB" : "大小未知";
                 string tag = quantized
                     ? "FP8 量化 · 省显存"
@@ -172,9 +184,15 @@ public sealed class TtsService : IDisposable
                         : "fp16";
 
                 string desc = $"{sizeText} · {tag}";
-                if (quantized)
+                if (isBase)
                 {
-                    desc += " · 音色与 fp16 有细微差别，可自行试听对比";
+                    desc += isBase && !hasPrompt
+                        ? " · 原始底模，未学过任何特定音色"
+                        : " · 原始底模";
+                }
+                else if (!hasPrompt)
+                {
+                    desc += " · ⚠️ 缺配套音色文件，切换后声线不变";
                 }
 
                 list.Add(new TtsModelOption(
@@ -182,12 +200,16 @@ public sealed class TtsService : IDisposable
                     DisplayName: $"{name}    ({desc})",
                     Description: desc,
                     SizeBytes: size,
-                    IsQuantized: quantized));
+                    IsQuantized: quantized,
+                    HasMatchingPrompt: hasPrompt,
+                    IsBaseModel: isBase));
             }
 
-            // 优先推荐 fp16/q8 这类紧凑权重，原版 fp32 排最后
+            // 排序：有配套音色的微调权重优先 > 量化 > 名称；缺音色的和底模垫底
             list.Sort((a, b) =>
             {
+                if (a.HasMatchingPrompt != b.HasMatchingPrompt) return a.HasMatchingPrompt ? -1 : 1;
+                if (a.IsBaseModel != b.IsBaseModel) return a.IsBaseModel ? 1 : -1;
                 if (a.IsQuantized != b.IsQuantized) return a.IsQuantized ? -1 : 1;
                 return string.Compare(a.FileName, b.FileName, StringComparison.OrdinalIgnoreCase);
             });

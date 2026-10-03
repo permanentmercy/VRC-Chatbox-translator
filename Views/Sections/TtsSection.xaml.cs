@@ -175,6 +175,16 @@ public sealed partial class TtsSection : UserControl
             m => string.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase));
         string detail = opt != null ? opt.Description : "该权重不在 checkpoints 目录中";
 
+        // 音色由「GPT 权重 + 音色特征 prompt」共同决定。
+        // 只有权重、没有配套 prompt 的话，切过去声线不会变——这点必须讲清楚，
+        // 否则很容易误以为微调没生效。
+        if (opt != null && !opt.HasMatchingPrompt)
+        {
+            detail += "。⚠️ 该权重没有配套音色文件（prompts/" +
+                      Path.GetFileNameWithoutExtension(opt.FileName) +
+                      "_prompt.pt），切换后只会换咬字/韵律，声线仍是默认音色";
+        }
+
         // 只有引擎在跑的时候才需要关心"切换要不要重启"
         bool running = TtsService.Instance.State is TtsServerState.Ready
                                                   or TtsServerState.Synthesizing

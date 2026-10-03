@@ -37,7 +37,15 @@ public record TtsModelOption(
     string DisplayName,
     string Description,
     long SizeBytes,
-    bool IsQuantized
+    bool IsQuantized,
+    /// <summary>
+    /// 是否有配套音色文件（prompts/&lt;权重名&gt;_prompt.pt）。
+    /// **没有的话切过去声线不会变** —— IndexTTS 的音色由 GPT 权重 + cond_mel 音色特征
+    /// 共同决定，服务端在没有配套 prompt 时会回退到默认音色。
+    /// </summary>
+    bool HasMatchingPrompt = false,
+    /// <summary>是否是未微调的原始底模（如 gpt.pth），没有学过任何特定音色</summary>
+    bool IsBaseModel = false
 );
 
 public record TtsSynthesisResult(
