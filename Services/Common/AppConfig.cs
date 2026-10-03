@@ -122,6 +122,16 @@ public class AppConfig
     public string TtsPythonExePath { get; set; } = @"D:\software\conda\envs\indextts\python.exe";
     public string TtsServerScriptPath { get; set; } = @"H:\program\chatbox\indextts\tts_server.py";
     public string TtsModelName { get; set; } = "gpt_me_lora.pth";
+
+    /// <summary>
+    /// 音色特征文件名（位于 checkpoints 同级的 prompts/ 目录）。
+    /// 与 TtsModelName **解耦**：权重决定咬字/韵律，音色决定声线，可以自由组合。
+    /// 例如用阿也的 LoRA 权重 + me 的音色特征。
+    /// </summary>
+    public string TtsPromptFile { get; set; } = "me_prompt.pt";
+
+    /// <summary>切换权重时是否自动把音色切到该权重的配套音色（取消勾选则完全手动）</summary>
+    public bool TtsAutoFollowPrompt { get; set; } = true;
     public string TtsVirtualMicDeviceId { get; set; } = string.Empty;
     public string TtsMonitorDeviceId { get; set; } = string.Empty;
     public bool IsTtsMonitorEnabled { get; set; } = true;

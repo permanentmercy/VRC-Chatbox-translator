@@ -554,6 +554,20 @@ public partial class SettingsService
         get => Config.TtsModelName;
         set { if (Config.TtsModelName != value) { Config.TtsModelName = value; SaveConfigDebounced(); } }
     }
+
+    /// <summary>音色特征文件名（prompts/ 目录下），与权重解耦</summary>
+    public string TtsPromptFile
+    {
+        get => Config.TtsPromptFile;
+        set { if (Config.TtsPromptFile != value) { Config.TtsPromptFile = value; SaveConfigDebounced(); } }
+    }
+
+    /// <summary>切换权重时是否自动跟随配套音色</summary>
+    public bool TtsAutoFollowPrompt
+    {
+        get => Config.TtsAutoFollowPrompt;
+        set { if (Config.TtsAutoFollowPrompt != value) { Config.TtsAutoFollowPrompt = value; SaveConfigDebounced(); } }
+    }
     public string TtsVirtualMicDeviceId
     {
         get => Config.TtsVirtualMicDeviceId;

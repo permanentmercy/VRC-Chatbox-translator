@@ -114,6 +114,89 @@ public sealed class TtsService : IDisposable
         return devices;
     }
 
+    /// <summary>
+    /// 定位音色特征目录：与 checkpoints 同级的 prompts/
+    /// </summary>
+    public static string? ResolvePromptsDir(string? serverScriptPath = null)
+    {
+        string? checkpoints = ResolveCheckpointsDir(serverScriptPath);
+        if (checkpoints == null) return null;
+
+        string? dir = Path.GetDirectoryName(checkpoints);
+        if (string.IsNullOrEmpty(dir)) return null;
+
+        return Path.Combine(dir, "prompts");
+    }
+
+    /// <summary>
+    /// 扫描 prompts 目录里所有可用的音色特征（cond_mel）。
+    ///
+    /// 音色与权重是**解耦**的：权重决定咬字/韵律，音色决定声线，
+    /// 两者可以自由组合（比如用阿也的 LoRA 配 me 的音色）。
+    /// </summary>
+    public List<TtsPromptOption> DiscoverPrompts(string? serverScriptPath = null)
+    {
+        var list = new List<TtsPromptOption>();
+        string? dir = ResolvePromptsDir(serverScriptPath);
+
+        if (dir == null || !Directory.Exists(dir))
+        {
+            LogOccurred?.Invoke($"未找到音色目录: {dir ?? "(路径无效)"}");
+            return list;
+        }
+
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(dir, "*.pt"))
+            {
+                string name = Path.GetFileName(path);
+                long size = 0;
+                try { size = new FileInfo(path).Length; } catch { }
+
+                string stem = Path.GetFileNameWithoutExtension(name);
+                // X_prompt.pt 是「某个权重 X.pth 的配套音色」，去掉后缀就是它属于谁
+                bool isPaired = stem.EndsWith("_prompt", StringComparison.OrdinalIgnoreCase);
+                string owner = isPaired ? stem[..^"_prompt".Length] : "";
+
+                string desc = isPaired
+                    ? $"{size / 1024.0:F0} KB · 配套权重 {owner}.pth"
+                    : $"{size / 1024.0:F0} KB · 独立音色";
+
+                list.Add(new TtsPromptOption(
+                    FileName: name,
+                    DisplayName: $"{name}    ({desc})",
+                    Description: desc,
+                    SizeBytes: size));
+            }
+
+            // 配套音色在前（按权重名排），独立的排后面
+            list.Sort((a, b) =>
+            {
+                bool pa = a.FileName.EndsWith("_prompt.pt", StringComparison.OrdinalIgnoreCase);
+                bool pb = b.FileName.EndsWith("_prompt.pt", StringComparison.OrdinalIgnoreCase);
+                if (pa != pb) return pa ? -1 : 1;
+                return string.Compare(a.FileName, b.FileName, StringComparison.OrdinalIgnoreCase);
+            });
+        }
+        catch (Exception ex)
+        {
+            LogOccurred?.Invoke($"扫描音色目录异常: {ex.Message}");
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 判断某个音色文件是不是某个权重的配套音色（X.pth ↔ X_prompt.pt）
+    /// </summary>
+    public static bool IsPromptPairedWith(string promptFile, string checkpointFile)
+    {
+        if (string.IsNullOrWhiteSpace(promptFile) || string.IsNullOrWhiteSpace(checkpointFile)) return false;
+        string pStem = Path.GetFileNameWithoutExtension(promptFile);
+        string cStem = Path.GetFileNameWithoutExtension(checkpointFile);
+        return pStem.Equals(cStem + "_prompt", StringComparison.OrdinalIgnoreCase);
+    }
+
     // ======================================================================
     // 推理权重发现
     // ======================================================================
@@ -646,6 +729,19 @@ public sealed class TtsService : IDisposable
     }
 
     /// <summary>
+    /// 本次请求指定的音色特征。
+    ///
+    /// 只发**文件名**（不含路径），服务端在它自己的 prompts/ 目录内解析，
+    /// 这样客户端不需要知道服务端装在哪，也不存在路径穿越问题。
+    /// </summary>
+    private static string? ResolveRequestPrompt()
+    {
+        string prompt = SettingsService.Instance.Config.TtsPromptFile;
+        if (string.IsNullOrWhiteSpace(prompt)) return null;
+        return Path.GetFileName(prompt);
+    }
+
+    /// <summary>
     /// 请求 IndexTTS 服务合成语音（免参考音频，纯模型推理）
     /// </summary>
     public async Task<TtsSynthesisResult> SynthesizeAsync(string text, CancellationToken ct = default)
@@ -668,7 +764,7 @@ public sealed class TtsService : IDisposable
             var reqObj = new
             {
                 text = rawText,
-                audio_prompt = (string?)null, // 强制传 null，指示服务端使用模型内置专属微调音色纯推理，不读任何参考音频
+                audio_prompt = ResolveRequestPrompt(), // 指定音色特征（prompts/ 下的文件名）
                 model = ResolveRequestModelAlias()
             };
             string reqJson = JsonSerializer.Serialize(reqObj);
@@ -801,7 +897,7 @@ public sealed class TtsService : IDisposable
         var reqObj = new
         {
             text = rawText,
-            audio_prompt = (string?)null, // 免参考音频，自动使用微调专属音色
+            audio_prompt = ResolveRequestPrompt(), // 指定音色特征（prompts/ 下的文件名）
             do_sample = false,           // 贪心解码：2.5倍提速，消除首字出声漫长等待
             model = ResolveRequestModelAlias()
         };

@@ -64,6 +64,10 @@
                         <ColumnDefinition Width="340" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
 
                     <TextBox x:Name="ServerEndpointTextBox" Header="TTS 服务端点 (REST API)"
                              Text="http://127.0.0.1:9880"
@@ -77,10 +81,10 @@
                             </Grid.ColumnDefinitions>
 
                             <ComboBox x:Name="ModelNameComboBox"
-                                      Header="推理权重 (自动扫描 checkpoints 目录)"
+                                      Header="① 推理权重 (扫描 checkpoints 目录) —— 决定咬字与韵律"
                                       HorizontalAlignment="Stretch"
                                       SelectionChanged="ModelNameComboBox_SelectionChanged"
-                                      ToolTipService.ToolTip="选择启动引擎时加载、以及每次合成请求使用的 GPT 权重。切换后无需重启引擎即可生效（服务端只重载 GPT 主干）。" />
+                                      ToolTipService.ToolTip="选择启动引擎时加载的 GPT 权重。切换后无需重启引擎即可生效（服务端只重载 GPT 主干）。" />
 
                             <Button x:Name="RefreshModelsButton" Grid.Column="1"
                                     Content="刷新" VerticalAlignment="Bottom"
@@ -89,6 +93,39 @@
                         </Grid>
 
                         <TextBlock x:Name="ModelHintTextBlock"
+                                   TextWrapping="Wrap"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <ComboBox x:Name="PromptNameComboBox"
+                                      Header="② 音色特征 (扫描 prompts 目录) —— 决定声线，与权重自由组合"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="PromptNameComboBox_SelectionChanged"
+                                      ToolTipService.ToolTip="音色与权重是解耦的：可以用阿也的权重配 me 的声线，或反过来。切换音色立即生效，不需要重启引擎。" />
+
+                            <CheckBox x:Name="AutoFollowPromptCheckBox" Grid.Column="1"
+                                      Content="跟随" VerticalAlignment="Bottom"
+                                      Margin="0,0,0,8"
+                                      IsChecked="True"
+                                      Click="AutoFollowPromptCheckBox_Click"
+                                      ToolTipService.ToolTip="勾选后，切换权重时自动把音色切到它的配套音色（X.pth → X_prompt.pt）；取消则两个下拉完全独立手动选" />
+
+                            <Button x:Name="RefreshPromptsButton" Grid.Column="2"
+                                    Content="刷新" VerticalAlignment="Bottom"
+                                    Click="RefreshPromptsButton_Click"
+                                    ToolTipService.ToolTip="重新扫描 prompts 目录" />
+                        </Grid>
+
+                        <TextBlock x:Name="PromptHintTextBlock"
                                    TextWrapping="Wrap"
                                    Style="{StaticResource CaptionTextBlockStyle}"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

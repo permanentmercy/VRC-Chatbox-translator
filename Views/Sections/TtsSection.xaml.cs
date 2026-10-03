@@ -16,6 +16,7 @@ public sealed partial class TtsSection : UserControl
     private bool _isInitializing = true;
     private List<TtsDeviceInfo> _devices = new();
     private List<TtsModelOption> _modelOptions = new();
+    private List<TtsPromptOption> _promptOptions = new();
 
     public TtsSection()
     {
@@ -32,6 +33,8 @@ public sealed partial class TtsSection : UserControl
         TtsEnableSwitch.IsOn = s.IsTtsEnabled;
         ServerEndpointTextBox.Text = s.TtsServerEndpoint;
         LoadModelOptions();
+        LoadPromptOptions();
+        AutoFollowPromptCheckBox.IsChecked = s.TtsAutoFollowPrompt;
         AutoStartServerCheckBox.IsChecked = s.AutoStartTtsServer;
 
         MicVolumeSlider.Value = Math.Round(s.TtsOutputVolume * 100);
@@ -114,6 +117,117 @@ public sealed partial class TtsSection : UserControl
     }
 
     // ------------------------------------------------------------------ //
+    // 音色特征选择（与权重解耦）
+    // ------------------------------------------------------------------ //
+
+    private void LoadPromptOptions()
+    {
+        string saved = SettingsService.Instance.TtsPromptFile;
+        _promptOptions = TtsService.Instance.DiscoverPrompts();
+
+        PromptNameComboBox.Items.Clear();
+        foreach (var p in _promptOptions)
+        {
+            PromptNameComboBox.Items.Add(new ComboBoxItem
+            {
+                Content = p.DisplayName,
+                Tag = p.FileName
+            });
+        }
+
+        int idx = _promptOptions.FindIndex(
+            p => string.Equals(p.FileName, saved, StringComparison.OrdinalIgnoreCase));
+
+        if (idx < 0 && !string.IsNullOrWhiteSpace(saved))
+        {
+            // 配置里的音色文件不在目录中，仍然显示出来，避免设置项凭空消失
+            PromptNameComboBox.Items.Insert(0, new ComboBoxItem
+            {
+                Content = $"{saved}    (未在 prompts 目录中找到)",
+                Tag = saved
+            });
+            idx = 0;
+        }
+
+        if (PromptNameComboBox.Items.Count > 0)
+        {
+            PromptNameComboBox.SelectedIndex = Math.Clamp(idx, 0, PromptNameComboBox.Items.Count - 1);
+        }
+        UpdatePromptHint();
+    }
+
+    /// <summary>
+    /// 刷新音色下拉框下方那行说明，并标出当前组合是否"配套"
+    /// </summary>
+    private void UpdatePromptHint()
+    {
+        if (PromptHintTextBlock is null) return;
+
+        if (PromptNameComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string file)
+        {
+            PromptHintTextBlock.Text = "未发现可用的音色特征文件，请检查 prompts 目录。";
+            return;
+        }
+
+        var opt = _promptOptions.Find(
+            p => string.Equals(p.FileName, file, StringComparison.OrdinalIgnoreCase));
+        string detail = opt != null ? opt.Description : "该音色文件不在 prompts 目录中";
+
+        string? weight = (ModelNameComboBox.SelectedItem as ComboBoxItem)?.Tag as string;
+        if (!string.IsNullOrEmpty(weight))
+        {
+            detail += TtsService.IsPromptPairedWith(file, weight)
+                ? "，与当前权重配套"
+                : "，⚠️ 与当前权重不配套（声线来自这里，咬字来自权重）";
+        }
+
+        PromptHintTextBlock.Text = detail + "。切换音色立即生效，不需要重启引擎。";
+    }
+
+    private void PromptNameComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializing) return;
+        if (PromptNameComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string file) return;
+
+        SettingsService.Instance.TtsPromptFile = file;
+        UpdatePromptHint();
+        UpdateModelHint();
+        SettingsService.Instance.AddLog("TTS", $"音色特征已切换为 {file}", true);
+    }
+
+    private void AutoFollowPromptCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isInitializing) return;
+        SettingsService.Instance.TtsAutoFollowPrompt = AutoFollowPromptCheckBox.IsChecked == true;
+        UpdatePromptHint();
+    }
+
+    private void RefreshPromptsButton_Click(object sender, RoutedEventArgs e)
+    {
+        LoadPromptOptions();
+        SettingsService.Instance.AddLog(
+            "TTS", $"已重新扫描 prompts 目录，发现 {_promptOptions.Count} 个音色特征", true);
+    }
+
+    /// <summary>
+    /// 把音色切到指定权重的配套音色（X.pth → X_prompt.pt）。
+    /// 找不到配套就保持原样，不擅自改。
+    /// </summary>
+    private void FollowPromptForWeight(string checkpointFile)
+    {
+        string target = Path.GetFileNameWithoutExtension(checkpointFile) + "_prompt.pt";
+        int idx = _promptOptions.FindIndex(
+            p => string.Equals(p.FileName, target, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0) return;
+
+        bool same = (PromptNameComboBox.SelectedItem as ComboBoxItem)?.Tag is string cur &&
+                    string.Equals(cur, target, StringComparison.OrdinalIgnoreCase);
+        if (same) return;
+
+        PromptNameComboBox.SelectedIndex = idx;   // 触发 SelectionChanged 完成持久化
+    }
+
+    // ------------------------------------------------------------------ //
     // 推理权重选择
     // ------------------------------------------------------------------ //
 
@@ -156,6 +270,7 @@ public sealed partial class TtsSection : UserControl
             ModelNameComboBox.SelectedIndex = Math.Clamp(idx, 0, ModelNameComboBox.Items.Count - 1);
         }
         UpdateModelHint();
+        UpdatePromptHint();
     }
 
     /// <summary>
@@ -209,6 +324,13 @@ public sealed partial class TtsSection : UserControl
 
         SettingsService.Instance.TtsModelName = file;
         UpdateModelHint();
+
+        // 「跟随」开启时，切换权重自动把音色切到它的配套音色
+        if (SettingsService.Instance.TtsAutoFollowPrompt)
+        {
+            FollowPromptForWeight(file);
+        }
+        UpdatePromptHint();
 
         if (TtsService.Instance.IsModelRegistered(file))
         {

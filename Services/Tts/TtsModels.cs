@@ -30,6 +30,16 @@ public record TtsHealthStatus(
 );
 
 /// <summary>
+/// 一个可选的音色特征（从 prompts 目录扫描得到）
+/// </summary>
+public record TtsPromptOption(
+    string FileName,
+    string DisplayName,
+    string Description,
+    long SizeBytes
+);
+
+/// <summary>
 /// 一个可选的推理权重（从 checkpoints 目录扫描得到）
 /// </summary>
 public record TtsModelOption(
