@@ -25,6 +25,7 @@ public sealed partial class ImmersiveWindow : Window
     private DateTime _lastImeEndTime = DateTime.MinValue;
     private bool _isSending = false;
     private bool _isAutoFilling = false;
+    private long _inputRevision;
 
     public ImmersiveWindow()
     {
@@ -93,6 +94,17 @@ public sealed partial class ImmersiveWindow : Window
         UpdateImmersiveLayout();
 
         InputCard.SizeChanged += (s, e) => UpdateHitBounds();
+
+        // 沉浸窗没有标题栏关闭按钮，但 Alt+F4 仍会触发 Closing。
+        // 若真的关闭窗口，之后切换沉浸模式时 AppWindow.Show() 会抛异常，
+        // 主窗口又已被隐藏，程序会变成“只剩托盘图标”的不可见状态。
+        AppWindow.Closing += (s, e) =>
+        {
+            e.Cancel = true;
+            AppWindow.Hide();
+            // Alt+F4 与“退出简洁模式”语义一致，避免模式仍开启而唤醒逻辑拒绝隐藏窗口。
+            SettingsService.Instance.SetImmersiveMode(false);
+        };
 
         Closed += ImmersiveWindow_Closed;
     }
@@ -354,11 +366,16 @@ public sealed partial class ImmersiveWindow : Window
 
     private void MessageInputBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        ++_inputRevision; // 即使先编辑再改回原文，也属于新的草稿。
         if (_isClearingOnSend) return;
 
         string rawText = MessageInputBox.Text;
         int len = rawText.Length;
         CharCountTextBlock.Text = $"{len} / 144 ";
+
+        // 隐藏的 MeasureTextBlock 负责按换行后的真实行数撑开输入卡片高度。
+        // 之前只在清空时重置为 "A"，多行输入时卡片不会随内容增高，文字会被裁切。
+        MeasureTextBlock.Text = string.IsNullOrEmpty(rawText) ? "A" : rawText;
 
         if (len == 0)
         {
@@ -436,7 +453,9 @@ public sealed partial class ImmersiveWindow : Window
 
                 if (_isSending) return;
 
-                string text = MessageInputBox.Text.Trim();
+                string submittedInput = MessageInputBox.Text;
+                long submittedRevision = _inputRevision;
+                string text = submittedInput.Trim();
                 if (string.IsNullOrEmpty(text))
                 {
                     return;
@@ -452,7 +471,9 @@ public sealed partial class ImmersiveWindow : Window
                 {
                     bool sent = await SettingsService.Instance.FinalizeSendAsync(text);
 
-                    if (sent && SettingsService.Instance.IsClearOnSendEnabled)
+                    if (sent && SettingsService.Instance.IsClearOnSendEnabled
+                        && submittedRevision == _inputRevision
+                        && string.Equals(MessageInputBox.Text, submittedInput, StringComparison.Ordinal))
                     {
                         _isClearingOnSend = true;
                         try

@@ -23,7 +23,9 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
     private WasapiRecorder? _recorder;
     private WaveFormat _waveFormat;
     private bool _isRecording;
+    private bool _isStopping;
     private bool _isProcessFound;
+    private bool _formatMismatch;
     private int _targetPid;
     private CancellationTokenSource? _watcherCts;
 
@@ -60,18 +62,20 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
     public static async Task<ProcessLoopbackCapture> CreateAsync(string processName = "VRChat", Action<string>? statusCallback = null)
     {
         var procs = Process.GetProcessesByName(processName);
-        if (procs.Length > 0)
+        int targetPid = procs.Length > 0 ? procs[0].Id : 0;
+        foreach (var p in procs) p.Dispose();
+
+        if (targetPid != 0)
         {
-            var targetProc = procs[0];
             try
             {
                 var builder = new WasapiRecorderBuilder()
-                    .WithProcessLoopback((uint)targetProc.Id, ProcessLoopbackMode.IncludeTargetProcessTree);
+                    .WithProcessLoopback((uint)targetPid, ProcessLoopbackMode.IncludeTargetProcessTree);
                 var recorder = await builder.BuildAsync();
 
-                statusCallback?.Invoke($"已锁定进程: {processName} (PID: {targetProc.Id})，开启纯净隔离音频捕获");
-                ProcessStateChanged?.Invoke(processName, true, targetProc.Id);
-                return new ProcessLoopbackCapture(processName, recorder, true, targetProc.Id);
+                statusCallback?.Invoke($"已锁定进程: {processName} (PID: {targetPid})，开启纯净隔离音频捕获");
+                ProcessStateChanged?.Invoke(processName, true, targetPid);
+                return new ProcessLoopbackCapture(processName, recorder, true, targetPid);
             }
             catch (Exception ex)
             {
@@ -89,6 +93,14 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
         var fallbackRecorder = await fallbackBuilder.BuildAsync();
         ProcessStateChanged?.Invoke(processName, false, 0);
         return new ProcessLoopbackCapture(processName, fallbackRecorder, false, 0);
+    }
+
+    private static bool AreWaveFormatsCompatible(WaveFormat a, WaveFormat b)
+    {
+        return a.SampleRate == b.SampleRate &&
+               a.Channels == b.Channels &&
+               a.BitsPerSample == b.BitsPerSample &&
+               a.Encoding == b.Encoding;
     }
 
     private void AttachRecorderEvents(WasapiRecorder recorder)
@@ -115,10 +127,18 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     private void OnRecorderRecordingStopped(object? sender, StoppedEventArgs e)
     {
-        if (!_isRecording)
-        {
-            RecordingStopped?.Invoke(this, e);
-        }
+        if (_isStopping) return;
+
+        // 录制期间收到停止事件 = 目标进程退出/会话中断等异常情况。
+        // 旧逻辑写成了 if (!_isRecording)，反而把录制中的异常完全吞掉，
+        // 导致 SpeechService 永远收不到错误、UI 仍显示“已连接”，实际永久静音。
+        _isRecording = false;
+        _isProcessFound = false;
+        ProcessStateChanged?.Invoke(_processName, false, 0);
+
+        RecordingStopped?.Invoke(this, e.Exception != null
+            ? e
+            : new StoppedEventArgs(new InvalidOperationException("进程隔离音频捕获已意外停止")));
     }
 
     public void StartRecording()
@@ -138,14 +158,22 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
     {
         if (!_isRecording) return;
         _isRecording = false;
-
-        StopProcessWatcher();
+        _isStopping = true;
 
         try
         {
-            _recorder?.StopRecording();
+            StopProcessWatcher();
+
+            try
+            {
+                _recorder?.StopRecording();
+            }
+            catch { }
         }
-        catch { }
+        finally
+        {
+            _isStopping = false;
+        }
 
         RecordingStopped?.Invoke(this, new StoppedEventArgs());
     }
@@ -153,17 +181,32 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
     public async Task<bool> TrySwitchToProcessAsync()
     {
         if (_isProcessFound) return true;
+        if (_formatMismatch) return false;
         try
         {
             var procs = Process.GetProcessesByName(_processName);
             if (procs.Length == 0) return false;
 
-            var proc = procs[0];
-            StatusNotice?.Invoke($"检测到 {_processName} 已启动 (PID: {proc.Id})，正在无缝切换至隔离音频流...");
+            int targetPid = procs[0].Id;
+            foreach (var p in procs) p.Dispose();
+
+            StatusNotice?.Invoke($"检测到 {_processName} 已启动 (PID: {targetPid})，正在无缝切换至隔离音频流...");
 
             var builder = new WasapiRecorderBuilder()
-                .WithProcessLoopback((uint)proc.Id, ProcessLoopbackMode.IncludeTargetProcessTree);
+                .WithProcessLoopback((uint)targetPid, ProcessLoopbackMode.IncludeTargetProcessTree);
             var newRecorder = await builder.BuildAsync();
+
+            // SpeechService 的 BufferedWaveProvider/重采样链是在 StartAsync 时按旧
+            // recorder 的 WaveFormat 构建的，热切换后格式变化会得到变调/错乱音频。
+            // 这种情况宁可保持原监听并提示重启，也不要静默播放损坏音频。
+            if (!AreWaveFormatsCompatible(_waveFormat, newRecorder.WaveFormat))
+            {
+                try { newRecorder.Dispose(); } catch { }
+                _formatMismatch = true;
+                StopProcessWatcher();
+                StatusNotice?.Invoke("新进程音频格式与当前监听不一致，已保持原音频流；请重启语音识别以启用进程隔离。");
+                return false;
+            }
 
             var oldRecorder = _recorder;
             if (oldRecorder != null)
@@ -174,7 +217,7 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
             }
 
             _recorder = newRecorder;
-            _targetPid = proc.Id;
+            _targetPid = targetPid;
             _isProcessFound = true;
             _waveFormat = newRecorder.WaveFormat;
             AttachRecorderEvents(_recorder);
@@ -185,7 +228,7 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
             }
 
             StatusNotice?.Invoke($"已成功锁定 {_processName}，现已过滤全部音乐与外部杂音");
-            ProcessStateChanged?.Invoke(_processName, true, proc.Id);
+            ProcessStateChanged?.Invoke(_processName, true, targetPid);
             return true;
         }
         catch (Exception ex)
@@ -203,7 +246,7 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
 
         _ = Task.Run(async () =>
         {
-            while (!token.IsCancellationRequested && _isRecording && !_isProcessFound)
+            while (!token.IsCancellationRequested && _isRecording && !_isProcessFound && !_formatMismatch)
             {
                 try
                 {

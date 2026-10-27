@@ -63,7 +63,7 @@ public partial class SpeechService
             Path.Combine(AppContext.BaseDirectory, modelFileName),
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Models", modelFileName),
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Models", modelFileName),
-            Path.Combine(@"H:\program\chatbox\VrcChatboxDemo\Models", modelFileName),
+            Path.Combine(Environment.CurrentDirectory, "Models", modelFileName),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VrcChatboxDemo", "Models", modelFileName)
         };
 
@@ -94,8 +94,23 @@ public partial class SpeechService
 
         StatusChanged?.Invoke($"正在准备 Whisper {targetType} 语音模型权重，请稍候...");
         using var modelStream = await WhisperGgmlDownloader.Default.GetGgmlModelAsync(ggmlType);
-        using var fileWriter = File.OpenWrite(targetPath);
-        await modelStream.CopyToAsync(fileWriter);
+
+        // 先写临时文件再原子替换：File.OpenWrite 不会截断旧文件，若上次下载中断留下
+        // 半截文件，继续覆盖会保留尾部脏数据，导致模型永久损坏。临时文件也能保证
+        // 下载失败时不会破坏已有的可用模型。
+        string tempPath = targetPath + ".download";
+        try
+        {
+            using (var fileWriter = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                await modelStream.CopyToAsync(fileWriter);
+            }
+            File.Move(tempPath, targetPath, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+        }
 
         StatusChanged?.Invoke($"Whisper {targetType} 模型下载完毕就绪");
         return targetPath;
@@ -122,24 +137,29 @@ public partial class SpeechService
             EnsureCudaEnvironment();
             string modelPath = await EnsureModelPathAsync(targetModel);
 
-            WhisperFactory newFactory;
-            try
+            string languageTag = _currentLanguageTag;
+            var built = await Task.Run(() =>
             {
-                newFactory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
-            }
-            catch (Exception ex)
-            {
-                StatusChanged?.Invoke($"GPU 加速加载异常 ({ex.Message})，自动回退至 CPU 推理");
-                newFactory = WhisperFactory.FromPath(modelPath);
-            }
+                WhisperFactory factory;
+                try
+                {
+                    factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
+                }
+                catch (Exception ex)
+                {
+                    StatusChanged?.Invoke($"GPU 加速加载异常 ({ex.Message})，自动回退至 CPU 推理");
+                    factory = WhisperFactory.FromPath(modelPath);
+                }
 
-            WhisperProcessor? newProcessor = null;
-            if (_isListening)
-            {
-                newProcessor = newFactory.CreateBuilder()
-                    .WithLanguage(_currentLanguageTag)
-                    .Build();
-            }
+                // 始终构建 processor：即使当前没有在监听，也不能把 _processor 置 null。
+                // StartAsync 可能在“已建好 processor、尚未把 _isListening 置 true”的窗口里
+                // 被切换模型，旧逻辑会把 _processor 清空，导致启动后永久零字幕。
+                var processor = factory.CreateBuilder().WithLanguage(languageTag).Build();
+                return (factory, processor);
+            });
+
+            WhisperFactory newFactory = built.factory;
+            WhisperProcessor newProcessor = built.processor;
 
             WhisperProcessor? oldProcessor = null;
             WhisperFactory? oldFactory = null;
@@ -149,13 +169,6 @@ public partial class SpeechService
             {
                 oldProcessor = _processor;
                 oldFactory = _factory;
-
-                if (!_isListening)
-                {
-                    var unused = newProcessor;
-                    newProcessor = null;
-                    _ = Task.Run(() => { try { unused?.Dispose(); } catch { } });
-                }
 
                 _factory = newFactory;
                 _processor = newProcessor;
@@ -188,11 +201,6 @@ public partial class SpeechService
     public async Task SwitchLanguageAsync(string? languageTag)
     {
         string targetLang = NormalizeLanguageTag(languageTag);
-        if (string.Equals(_currentLanguageTag, targetLang, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
         StatusChanged?.Invoke($"正在切换识别语言至: {GetLanguageDisplayName(targetLang)}...");
 
         if (_factory == null)
@@ -201,11 +209,25 @@ public partial class SpeechService
             return;
         }
 
+        // 与 SwitchModelAsync/EnsureProcessorAsync 共用同一把模型锁：
+        // 否则语言切换可能在模型切换释放旧工厂的瞬间调用 CreateBuilder()，
+        // 或把旧工厂产出的 processor 安装到 _processor 后旧工厂被 Dispose。
+        await _modelSwitchLock.WaitAsync();
         try
         {
-            var newProc = _factory.CreateBuilder()
+            // 必须在锁内比较：前一个语言请求可能仍在构建处理器，锁外的旧值
+            // 会把 A→B→A 中最后一次 A 误判成无需切换。
+            if (_processor != null && string.Equals(_currentLanguageTag, targetLang, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var factory = _factory;
+            if (factory == null) return;
+
+            var newProc = await Task.Run(() => factory.CreateBuilder()
                 .WithLanguage(targetLang)
-                .Build();
+                .Build());
 
             WhisperProcessor? oldProc;
             await _transcribeLock.WaitAsync();
@@ -228,6 +250,10 @@ public partial class SpeechService
         {
             ErrorOccurred?.Invoke($"切换语言失败: {ex.Message}");
         }
+        finally
+        {
+            _modelSwitchLock.Release();
+        }
     }
 
     /// <summary>
@@ -237,35 +263,44 @@ public partial class SpeechService
     {
         string targetLang = NormalizeLanguageTag(languageTag);
 
-        if (_processor != null && string.Equals(_currentLanguageTag, targetLang, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
         await _modelSwitchLock.WaitAsync();
         try
         {
+            if (_processor != null && string.Equals(_currentLanguageTag, targetLang, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
             if (_factory == null)
             {
                 EnsureCudaEnvironment();
                 StatusChanged?.Invoke("正在加载 Whisper 模型 (尝试启用 GPU/CUDA 加速)...");
                 string modelPath = await EnsureModelPathAsync(_currentModelType);
-                try
+
+                // 模型加载/处理器构建是重 IO + CPU/GPU 初始化，必须离开 UI 线程，
+                // 否则用户拨动语音开关时窗口会冻结数秒。
+                var factory = await Task.Run(() =>
                 {
-                    _factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
-                    var loadedLib = RuntimeOptions.LoadedLibrary;
-                    StatusChanged?.Invoke($"Whisper模型就绪 [推理加速: {loadedLib}]");
-                }
-                catch (Exception ex)
-                {
-                    StatusChanged?.Invoke($"GPU 加速加载异常 ({ex.Message})，自动回退至 CPU 推理");
-                    _factory = WhisperFactory.FromPath(modelPath);
-                }
+                    try
+                    {
+                        var f = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
+                        var loadedLib = RuntimeOptions.LoadedLibrary;
+                        StatusChanged?.Invoke($"Whisper模型就绪 [推理加速: {loadedLib}]");
+                        return f;
+                    }
+                    catch (Exception ex)
+                    {
+                        StatusChanged?.Invoke($"GPU 加速加载异常 ({ex.Message})，自动回退至 CPU 推理");
+                        return WhisperFactory.FromPath(modelPath);
+                    }
+                });
+                _factory = factory;
             }
 
-            var newProc = _factory.CreateBuilder()
+            var factoryForProcessor = _factory!;
+            var newProc = await Task.Run(() => factoryForProcessor.CreateBuilder()
                 .WithLanguage(targetLang)
-                .Build();
+                .Build());
 
             WhisperProcessor? oldProc;
             await _transcribeLock.WaitAsync();

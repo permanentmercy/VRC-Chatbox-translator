@@ -26,8 +26,8 @@
                 <!-- 固定宽度的输入项，防止点击或切换时发生横向重排抖动 -->
                 <Grid ColumnSpacing="20" RowSpacing="12">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="360" />
-                        <ColumnDefinition Width="360" />
+                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="320" />
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -62,7 +62,8 @@
                         <ComboBox x:Name="OllamaModelComboBox" Header="翻译模型"
                                   IsEditable="True"
                                   HorizontalAlignment="Stretch"
-                                  SelectionChanged="OllamaModelComboBox_SelectionChanged" />
+                                  SelectionChanged="OllamaModelComboBox_SelectionChanged"
+                                  LostFocus="OllamaModelComboBox_LostFocus" />
                         <Button x:Name="RefreshModelsButton" Grid.Column="1" VerticalAlignment="Bottom"
                                 Content="刷新模型" Click="RefreshModelsButton_Click" Margin="0,0,0,1" />
                         <Button x:Name="TestTranslationButton" Grid.Column="2" VerticalAlignment="Bottom"
@@ -127,8 +128,8 @@
 
                 <Grid ColumnSpacing="20" RowSpacing="12">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="340" />
-                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="320" />
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -146,6 +147,11 @@
                     <ToggleSwitch x:Name="ShowLatencySwitch" Grid.Row="1" Header="显示翻译请求延迟"
                                   Toggled="ShowLatencySwitch_Toggled"
                                   ToolTipService.ToolTip="在上方卡片的翻译结果旁显示请求消耗的毫秒数" />
+
+                    <ToggleSwitch x:Name="SentMessageTranslationSwitch" Grid.Row="1" Grid.Column="1"
+                                  Header="发送消息时自动翻译"
+                                  Toggled="SentMessageTranslationSwitch_Toggled"
+                                  ToolTipService.ToolTip="把您发送到 VRChat 的聊天内容翻译成目标语言，结果写入变量 {sent_translation}，可在常驻模板中选用" />
                 </Grid>
 
             </StackPanel>

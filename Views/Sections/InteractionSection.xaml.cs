@@ -42,10 +42,12 @@ public sealed partial class InteractionSection : UserControl
         LoadVariablesToComboBox();
         UpdateCharCount();
 
-        // 注册变量事件监听
+        // 注册变量事件监听（先退订：页面缓存下 Loaded 可能重复触发）
+        s.VariableService.VariablesListChanged -= OnVariablesListChanged;
         s.VariableService.VariablesListChanged += OnVariablesListChanged;
 
         // 启动状态刷新定时器 (每 500ms 刷新一次当前保活/避让状态)
+        _statusUpdateTimer?.Stop();
         _statusUpdateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _statusUpdateTimer.Tick += StatusUpdateTimer_Tick;
         _statusUpdateTimer.Start();
@@ -103,6 +105,9 @@ public sealed partial class InteractionSection : UserControl
         VariableComboBox.Items.Clear();
         foreach (var v in vars)
         {
+            // 以 __ 开头的是内部显示用变量（如 __sent_display），不暴露给用户插入
+            if (v.Name.StartsWith("__", StringComparison.Ordinal)) continue;
+
             string typeTag = v.IsBuiltin ? "(内置)" : "(外部)";
             string label = $"{{{v.Name}}}  -  {v.DisplayName} {typeTag}";
             var item = new ComboBoxItem
@@ -140,11 +145,9 @@ public sealed partial class InteractionSection : UserControl
             selStart = current.Length;
         }
 
+        // 模板本身不限长度（实际发送时会按 VRChat 144 字符截断），
+        // 这里不再按 144 截断插入内容。
         string updated = current.Insert(selStart, textToInsert);
-        if (updated.Length > 144)
-        {
-            updated = updated.Substring(0, 144);
-        }
 
         PersistentTextBox.Text = updated;
         int newPos = Math.Min(selStart + textToInsert.Length, updated.Length);
@@ -236,15 +239,13 @@ public sealed partial class InteractionSection : UserControl
     private void UpdateCharCount()
     {
         int len = PersistentTextBox.Text?.Length ?? 0;
-        PersistentCharCountTextBlock.Text = $"{len} / 144 ";
-        if (len > 144)
-        {
-            PersistentCharCountTextBlock.Foreground = new SolidColorBrush(Colors.Red);
-        }
-        else
-        {
-            PersistentCharCountTextBlock.ClearValue(TextBlock.ForegroundProperty);
-        }
+
+        // 模板本身不再限制 144 字符；只有真正发送到 VRChat 时才会截断。
+        // 超过 144 时给出提示，但不标红（模板长度不是错误）。
+        PersistentCharCountTextBlock.Text = len > 144
+            ? $"{len} 字符（发送时截断至 144）"
+            : $"{len} 字符";
+        PersistentCharCountTextBlock.ClearValue(TextBlock.ForegroundProperty);
     }
 
     private async void ApplyPersistentTextButton_Click(object sender, RoutedEventArgs e)
@@ -268,6 +269,14 @@ public sealed partial class InteractionSection : UserControl
         var s = SettingsService.Instance;
         s.PersistentCustomText = string.Empty;
         await s.PersistentTextService.ClearAsync(s.OscService);
+
+        // ClearAsync 已把服务置为未启用；同步开关与持久化配置，避免界面仍显示“开启/保活中”
+        if (PersistentTextSwitch.IsOn)
+        {
+            PersistentTextSwitch.IsOn = false;
+        }
+        s.IsPersistentTextEnabled = false;
+
         UpdateCharCount();
         RefreshStatusText();
     }

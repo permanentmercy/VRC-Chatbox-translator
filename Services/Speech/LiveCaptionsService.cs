@@ -20,29 +20,24 @@ public partial class LiveCaptionsService : IDisposable
 {
     private IntPtr _hWnd = IntPtr.Zero;
     private bool _isRunning;
+    private bool _isRestarting;
     private CancellationTokenSource? _workerCts;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
 
     private static readonly char[] TerminalDelimiters = new[] { '。', '！', '？', '…', '.', '!', '?' };
     private static readonly char[] CommaDelimiters = new[] { '，', ',', '、', '；', ';' };
-    private string _lastCommittedSentence = string.Empty;
     private string _lastFullText = string.Empty;
-    private readonly List<string> _recentCommittedSentences = new();
+    private readonly object _captionHistoryLock = new();
+    private string _consumptionText = string.Empty;
+    private int _consumedOffset;
 
     public void ResetHistory()
     {
-        lock (_recentCommittedSentences)
+        lock (_captionHistoryLock)
         {
-            _recentCommittedSentences.Clear();
-            if (!string.IsNullOrEmpty(_lastFullText))
-            {
-                _lastCommittedSentence = _lastFullText;
-                _recentCommittedSentences.Add(_lastFullText);
-            }
-            else
-            {
-                _lastCommittedSentence = string.Empty;
-            }
+            // 清空字幕时把当前帧（包括未定稿假说）作为已消费基线，而不是按句子内容去重。
+            _consumptionText = _lastFullText;
+            _consumedOffset = _consumptionText.Length;
         }
     }
 
@@ -68,7 +63,18 @@ public partial class LiveCaptionsService : IDisposable
             _hWnd = await EnsureLiveCaptionsProcessAsync(token, hideNativeWindow);
             if (_hWnd == IntPtr.Zero)
             {
+                // 启动失败必须回滚状态：否则 SettingsService 里用户开关仍是 true，
+                // UI 显示“已开启”但实际没有任何监听，而且不会再收到状态事件。
+                try
+                {
+                    _workerCts?.Cancel();
+                    _workerCts?.Dispose();
+                    _workerCts = null;
+                }
+                catch { }
+
                 ErrorOccurred?.Invoke("未找到 Windows 实时字幕窗口。请检查系统版本是否为 Windows 11 22H2 以上。");
+                RunningStateChanged?.Invoke(false);
                 return false;
             }
 
@@ -90,7 +96,18 @@ public partial class LiveCaptionsService : IDisposable
         }
         catch (Exception ex)
         {
+            try
+            {
+                _workerCts?.Cancel();
+                _workerCts?.Dispose();
+                _workerCts = null;
+            }
+            catch { }
+
+            _isRunning = false;
             ErrorOccurred?.Invoke($"启动实时字幕监听失败: {ex.Message}");
+            // 同步回滚用户开关，避免 UI 显示“已开启”但实际未运行
+            RunningStateChanged?.Invoke(false);
             return false;
         }
         finally
@@ -104,41 +121,52 @@ public partial class LiveCaptionsService : IDisposable
         await _sessionLock.WaitAsync();
         try
         {
-            bool wasRunning = _isRunning;
-            _isRunning = false;
-            if (wasRunning)
-            {
-                RunningStateChanged?.Invoke(false);
-            }
-
-            try
-            {
-                _workerCts?.Cancel();
-                _workerCts?.Dispose();
-                _workerCts = null;
-            }
-            catch { }
-
-            // 彻底终止系统原生 LiveCaptions 进程，释放语音识别模型与资源
-            try
-            {
-                var procs = Process.GetProcessesByName("LiveCaptions");
-                foreach (var p in procs)
-                {
-                    try { p.Kill(); } catch { }
-                }
-            }
-            catch { }
-            _hWnd = IntPtr.Zero;
-
-            if (wasRunning)
-            {
-                StatusChanged?.Invoke("Windows 实时字幕监听已停止");
-            }
+            StopCore();
         }
         finally
         {
             _sessionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 同步停止逻辑。Dispose 不能再 fire-and-forget 调用 StopAsync：那会在
+    /// StopAsync 真正执行前就释放 _sessionLock，导致 ObjectDisposedException，
+    /// 并且 LiveCaptions 进程可能来不及被终止。
+    /// </summary>
+    private void StopCore()
+    {
+        bool wasRunning = _isRunning;
+        _isRunning = false;
+        if (wasRunning)
+        {
+            RunningStateChanged?.Invoke(false);
+        }
+
+        try
+        {
+            _workerCts?.Cancel();
+            _workerCts?.Dispose();
+            _workerCts = null;
+        }
+        catch { }
+
+        // 彻底终止系统原生 LiveCaptions 进程，释放语音识别模型与资源
+        try
+        {
+            var procs = Process.GetProcessesByName("LiveCaptions");
+            foreach (var p in procs)
+            {
+                try { p.Kill(); } catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { }
+        _hWnd = IntPtr.Zero;
+
+        if (wasRunning)
+        {
+            StatusChanged?.Invoke("Windows 实时字幕监听已停止");
         }
     }
 
@@ -153,8 +181,11 @@ public partial class LiveCaptionsService : IDisposable
         IntPtr prevForeground = GetForegroundWindow();
         try
         {
+            _isRestarting = true;
             _isRunning = false;
-            RunningStateChanged?.Invoke(false);
+            // 注意：不要在这里触发 RunningStateChanged(false)。
+            // SettingsService 把它当作“用户关闭语音”，会写入 IsSpeechRecognitionEnabled=false，
+            // 导致每次切语言主开关闪断；重启失败时语音会被永久静默关闭。
 
             try
             {
@@ -171,6 +202,7 @@ public partial class LiveCaptionsService : IDisposable
                 foreach (var p in procs)
                 {
                     try { p.Kill(); } catch { }
+                    finally { p.Dispose(); }
                 }
             }
             catch { }
@@ -211,6 +243,7 @@ public partial class LiveCaptionsService : IDisposable
         }
         finally
         {
+            _isRestarting = false;
             _sessionLock.Release();
         }
     }
@@ -219,13 +252,12 @@ public partial class LiveCaptionsService : IDisposable
     {
         CUIAutomation? uia = null;
         IUIAutomationElement? captionsTextBlock = null;
-
         var idleTimer = Stopwatch.StartNew();
-        _lastCommittedSentence = string.Empty;
         _lastFullText = string.Empty;
-        lock (_recentCommittedSentences)
+        lock (_captionHistoryLock)
         {
-            _recentCommittedSentences.Clear();
+            _consumptionText = string.Empty;
+            _consumedOffset = 0;
         }
 
         bool isInitialBaseline = true;
@@ -375,6 +407,8 @@ public partial class LiveCaptionsService : IDisposable
 
     private void AlignInitialBaseline(string fullText)
     {
+        // 初始化这一帧的水位，下面的静默历史句与最后一句均按顺序推进同一个位置。
+        ExtractNewText(fullText);
         var allSentences = new List<string>();
         string tempText = fullText.Trim();
 
@@ -425,13 +459,15 @@ public partial class LiveCaptionsService : IDisposable
 
     private void RecordCommittedSentence(string sentence)
     {
-        _lastCommittedSentence = sentence;
-        lock (_recentCommittedSentences)
+        if (string.IsNullOrWhiteSpace(sentence)) return;
+        lock (_captionHistoryLock)
         {
-            _recentCommittedSentences.Add(sentence);
-            while (_recentCommittedSentences.Count > 15)
+            // 只在未消费区间向前找本次提交的位置。相同句子可以重复出现，
+            // 不能用全文 LastIndexOf 把后面尚未提交的重复句一并吞掉。
+            int index = _consumptionText.IndexOf(sentence, _consumedOffset, StringComparison.Ordinal);
+            if (index >= 0)
             {
-                _recentCommittedSentences.RemoveAt(0);
+                _consumedOffset = SkipCaptionSeparators(_consumptionText, index + sentence.Length);
             }
         }
     }
@@ -508,99 +544,80 @@ public partial class LiveCaptionsService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(fullText)) return string.Empty;
 
-        lock (_recentCommittedSentences)
+        lock (_captionHistoryLock)
         {
-            for (int i = _recentCommittedSentences.Count - 1; i >= 0; i--)
+            if (!string.Equals(_consumptionText, fullText, StringComparison.Ordinal))
             {
-                string sent = _recentCommittedSentences[i];
-                if (string.IsNullOrWhiteSpace(sent)) continue;
-
-                // 1. 忽略大小写查找（解决英文实时字幕 ASR 动态调整首字母大小写的匹配丢失问题）
-                int idx = fullText.LastIndexOf(sent, StringComparison.OrdinalIgnoreCase);
-                if (idx >= 0)
-                {
-                    return fullText.Substring(idx + sent.Length);
-                }
-
-                // 2. 备用标点与空格容差匹配（不区分大小写）
-                string fuzzySent = TrimTrailingPunctuation(sent);
-                if (fuzzySent.Length >= 2)
-                {
-                    int fIdx = fullText.LastIndexOf(fuzzySent, StringComparison.OrdinalIgnoreCase);
-                    if (fIdx >= 0)
-                    {
-                        int cutStart = fIdx + fuzzySent.Length;
-                        while (cutStart < fullText.Length && IsDelimiterOrPunctuation(fullText[cutStart]))
-                        {
-                            cutStart++;
-                        }
-                        return fullText.Substring(cutStart);
-                    }
-                }
+                _consumedOffset = RebaseConsumedOffset(fullText);
+                _consumptionText = fullText;
             }
+            return fullText.Substring(_consumedOffset);
         }
-
-        if (string.IsNullOrEmpty(_lastCommittedSentence))
-        {
-            return fullText;
-        }
-
-        int lastIdx = fullText.LastIndexOf(_lastCommittedSentence, StringComparison.OrdinalIgnoreCase);
-        if (lastIdx >= 0)
-        {
-            return fullText.Substring(lastIdx + _lastCommittedSentence.Length);
-        }
-
-        // 3. 词级后置锚定与防重复保护（当英文 ASR 回溯修改了已提交句子的中间词或标点时）：
-        // 绝不盲目返回整段 fullText 重复切句与提交，而是寻找最近已提交句子的末尾词向后定位
-        string safeFallback = FindRemainingTextByAnchor(fullText);
-        return safeFallback;
     }
 
-    private string FindRemainingTextByAnchor(string fullText)
+    private int RebaseConsumedOffset(string fullText)
     {
-        lock (_recentCommittedSentences)
+        if (_consumedOffset == 0) return 0;
+        // 最常见的追加帧直接沿用字符水位；不要在新帧里重新搜索最后一句的内容。
+        if (fullText.StartsWith(_consumptionText, StringComparison.OrdinalIgnoreCase))
         {
-            for (int i = _recentCommittedSentences.Count - 1; i >= 0; i--)
-            {
-                string sent = _recentCommittedSentences[i];
-                if (string.IsNullOrWhiteSpace(sent)) continue;
+            return SkipCaptionSeparators(fullText, _consumedOffset);
+        }
 
-                // 尝试提取该句的最后 2~3 个词作为锚点
-                var words = sent.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                if (words.Length >= 2)
-                {
-                    string anchor = words[^2] + " " + words[^1];
-                    anchor = TrimTrailingPunctuation(anchor);
-                    if (anchor.Length >= 4)
-                    {
-                        int aIdx = fullText.LastIndexOf(anchor, StringComparison.OrdinalIgnoreCase);
-                        if (aIdx >= 0)
-                        {
-                            int cutStart = aIdx + anchor.Length;
-                            while (cutStart < fullText.Length && IsDelimiterOrPunctuation(fullText[cutStart]))
-                            {
-                                cutStart++;
-                            }
-                            return fullText.Substring(cutStart);
-                        }
-                    }
-                }
-            }
+        var previous = MapCaptionText(_consumptionText);
+        var current = MapCaptionText(fullText);
+        int consumed = 0;
+        while (consumed < previous.EndOffsets.Count && previous.EndOffsets[consumed] <= _consumedOffset) consumed++;
+        if (consumed == 0 || current.Text.Length == 0) return 0;
 
-            // 若已有提交历史且全文长度未明显增长，绝不重复返回整段文本引起刷屏
-            if (_recentCommittedSentences.Count > 0)
+        int ToOffset(int count) => count == 0 ? 0 : SkipCaptionSeparators(fullText, current.EndOffsets[count - 1]);
+        string consumedPrefix = previous.Text.Substring(0, consumed);
+        if (current.Text.StartsWith(consumedPrefix, StringComparison.Ordinal)) return ToOffset(consumed);
+        // ASR 暂时收回已提交句的末尾时，缩短的历史仍是已消费内容，不能再次广播。
+        if (consumedPrefix.StartsWith(current.Text, StringComparison.Ordinal)) return fullText.Length;
+
+        // 滚屏会删除旧帧头部：按“旧帧后缀 = 新帧前缀”的最长重叠换算水位，
+        // 相同句子的新一次出现仍留在水位之后。归一化只用于对齐，不改变输出文本。
+        int minAnchor = ContainsCjk(_consumptionText) ? 2 : 4;
+        for (int removed = 1; removed <= previous.Text.Length - minAnchor; removed++)
+        {
+            int overlap = previous.Text.Length - removed;
+            if (current.Text.StartsWith(previous.Text.Substring(removed), StringComparison.Ordinal))
             {
-                return string.Empty;
+                return ToOffset(Math.Clamp(consumed - removed, 0, overlap));
             }
         }
 
-        return fullText;
+        // ASR 回溯调整已提交句子的中间词时，优先用最长的已消费尾部重定位。
+        // 从新帧前方找锚点，而不是选择最后一次出现，把后来的重复句也当成历史。
+        for (int start = 0; start <= consumedPrefix.Length - minAnchor; start++)
+        {
+            string anchor = consumedPrefix.Substring(start);
+            int index = current.Text.IndexOf(anchor, StringComparison.Ordinal);
+            if (index >= 0) return ToOffset(index + anchor.Length);
+        }
+
+        // 旧帧已完全滚出且无可靠锚点时，以新帧重新开始，不能永久返回空串。
+        return 0;
     }
 
-    private static string TrimTrailingPunctuation(string s)
+    private static (string Text, List<int> EndOffsets) MapCaptionText(string text)
     {
-        return s.TrimEnd(' ', '\t', '。', '！', '？', '…', '.', '!', '?', '，', ',', '、', '；', ';');
+        var normalized = new StringBuilder(text.Length);
+        var offsets = new List<int>(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (!char.IsLetterOrDigit(text[i])) continue;
+            normalized.Append(char.ToUpperInvariant(text[i]));
+            offsets.Add(i + 1);
+        }
+        return (normalized.ToString(), offsets);
+    }
+
+    private static int SkipCaptionSeparators(string text, int offset)
+    {
+        while (offset < text.Length && !char.IsLetterOrDigit(text[offset])) offset++;
+        return offset;
     }
 
     private static bool IsTerminalDelimiter(char c)
@@ -841,13 +858,6 @@ public partial class LiveCaptionsService : IDisposable
         return count;
     }
 
-    private static bool IsDelimiterOrPunctuation(char c)
-    {
-        return c == '。' || c == '！' || c == '？' || c == '…' ||
-               c == '.' || c == '!' || c == '?' || c == ' ' ||
-               c == '，' || c == ',' || c == '、' || c == '；' || c == ';';
-    }
-
     private static bool ContainsMeaningfulContent(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
@@ -920,8 +930,24 @@ public partial class LiveCaptionsService : IDisposable
 
     public void Dispose()
     {
-        _ = StopAsync();
-        _sessionLock.Dispose();
+        try
+        {
+            // 尽量等待正在进行的 Start/Stop 结束，避免在 StopAsync 的 await 之前就释放锁。
+            // 超时（例如在 UI 线程上等待启动流程）则直接执行同步停止，保证进程一定被清理。
+            if (_sessionLock.Wait(500))
+            {
+                try { StopCore(); }
+                finally { _sessionLock.Release(); }
+            }
+            else
+            {
+                StopCore();
+            }
+        }
+        catch { }
+
+        // 不 Dispose _sessionLock：并发的 StartAsync/StopAsync 仍可能调用 Release()，
+        // 在应用退出阶段释放它只会把一次干净的关闭变成 ObjectDisposedException。
         GC.SuppressFinalize(this);
     }
 }

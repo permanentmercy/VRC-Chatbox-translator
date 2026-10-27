@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -8,11 +9,14 @@ namespace VrcChatboxDemo.Services;
 
 public partial class InboundService
 {
-    private void StartOscUdpServer(CancellationToken ct)
+    private bool StartOscUdpServer(CancellationToken ct)
     {
         try
         {
-            _udpClient = new UdpClient(OscPort);
+            // 只绑定本地回环：README 明确承诺 Inbound 仅监听 127.0.0.1。
+            // 不带地址的 new UdpClient(port) 会绑到全部网卡，局域网主机就能向
+            // 本程序投递文本，并在 AutoSendToVrc 开启时替用户发到 VRChat。
+            _udpClient = new UdpClient(new IPEndPoint(IPAddress.Loopback, OscPort));
 
             _ = Task.Run(async () =>
             {
@@ -32,10 +36,15 @@ public partial class InboundService
                     catch { }
                 }
             }, ct);
+
+            return true;
         }
         catch (Exception ex)
         {
+            try { _udpClient?.Dispose(); } catch { }
+            _udpClient = null;
             StatusChanged?.Invoke($"UDP OSC 外部接口启动异常 ({OscPort}): {ex.Message}");
+            return false;
         }
     }
 

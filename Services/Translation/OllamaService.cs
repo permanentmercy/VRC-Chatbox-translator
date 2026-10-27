@@ -63,7 +63,7 @@ public class OllamaService
         string jsonPayload = JsonSerializer.Serialize(payload);
         using var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-        var response = await _httpClient.PostAsync(url, content, cancellationToken);
+        using var response = await _httpClient.PostAsync(url, content, cancellationToken);
         response.EnsureSuccessStatusCode();
 
         string jsonResponse = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -90,7 +90,7 @@ public class OllamaService
             string cleanEndpoint = (endpoint ?? "http://127.0.0.1:11434").TrimEnd('/');
             string url = $"{cleanEndpoint}/api/tags";
 
-            var response = await _httpClient.GetAsync(url, cancellationToken);
+            using var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode) return models;
 
             string json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -141,7 +141,7 @@ public class OllamaService
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(5));
 
-            var response = await _httpClient.PostAsync(url, content, cts.Token);
+            using var response = await _httpClient.PostAsync(url, content, cts.Token);
             return response.IsSuccessStatusCode;
         }
         catch
@@ -164,21 +164,30 @@ public class OllamaService
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(5));
 
-            var response = await _httpClient.GetAsync(psUrl, cts.Token);
+            using var response = await _httpClient.GetAsync(psUrl, cts.Token);
             if (!response.IsSuccessStatusCode) return 0;
 
             string json = await response.Content.ReadAsStringAsync(cts.Token);
             using var doc = JsonDocument.Parse(json);
+
+            // 整个批量卸载共用一个总预算：每个模型单独 5 秒的话，
+            // 有 3 个模型常驻时退出最多会被拖住 15 秒。这里总预算 6 秒，
+            // 超时后放弃剩余模型（它们会随 Ollama 自身 keep_alive 到期释放）。
+            using var unloadBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            unloadBudget.CancelAfter(TimeSpan.FromSeconds(6));
+
             if (doc.RootElement.TryGetProperty("models", out var modelsArray) && modelsArray.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in modelsArray.EnumerateArray())
                 {
+                    if (unloadBudget.IsCancellationRequested) break;
+
                     if (item.TryGetProperty("name", out var nameProp))
                     {
                         string? name = nameProp.GetString();
                         if (!string.IsNullOrWhiteSpace(name))
                         {
-                            bool success = await UnloadModelAsync(name, cleanEndpoint, cancellationToken);
+                            bool success = await UnloadModelAsync(name, cleanEndpoint, unloadBudget.Token);
                             if (success) unloadedCount++;
                         }
                     }

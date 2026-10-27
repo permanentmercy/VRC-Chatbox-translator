@@ -19,6 +19,7 @@ public sealed partial class ChatPage : Page
     private DateTime _lastImeEndTime = DateTime.MinValue;
     private bool _isSending = false;
     private bool _isAutoFilling = false;
+    private long _inputRevision;
 
     public ChatPage()
     {
@@ -30,6 +31,19 @@ public sealed partial class ChatPage : Page
     private void ChatPage_Loaded(object sender, RoutedEventArgs e)
     {
         var s = SettingsService.Instance;
+
+        // 页面启用 NavigationCacheMode，Loaded 可能在未触发 Unloaded 的情况下再次到来
+        // （例如缓存页面被重新挂载）。先退订再订阅，避免同一事件被处理多次。
+        s.SpeechRecognizedUpdated -= OnSpeechRecognizedUpdated;
+        s.SpeechHypothesisUpdated -= OnSpeechHypothesisUpdated;
+        s.TranslationUpdated -= OnTranslationUpdated;
+        s.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        s.SpeechStatusUpdated -= OnSpeechStatusUpdated;
+        s.RequestAutoFillInput -= OnRequestAutoFillInput;
+        s.TtsActiveStateChanged -= OnTtsActiveStateChanged;
+        s.TtsProgressChanged -= OnTtsProgressChanged;
+        s.TtsStatusUpdated -= OnTtsStatusUpdated;
+
         s.SpeechRecognizedUpdated += OnSpeechRecognizedUpdated;
         s.SpeechHypothesisUpdated += OnSpeechHypothesisUpdated;
         s.TranslationUpdated += OnTranslationUpdated;
@@ -279,6 +293,7 @@ public sealed partial class ChatPage : Page
 
     private void MessageInputBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        ++_inputRevision; // 即使先编辑再改回原文，也属于新的草稿。
         if (_isClearingOnSend) return;
 
         string rawText = MessageInputBox.Text;
@@ -330,7 +345,9 @@ public sealed partial class ChatPage : Page
 
                 if (_isSending) return;
 
-                string text = MessageInputBox.Text.Trim();
+                string submittedInput = MessageInputBox.Text;
+                long submittedRevision = _inputRevision;
+                string text = submittedInput.Trim();
                 if (string.IsNullOrEmpty(text))
                 {
                     return;
@@ -348,7 +365,9 @@ public sealed partial class ChatPage : Page
                     bool sent = await SettingsService.Instance.FinalizeSendAsync(text);
 
                     // 严密时序保底：只有在确保发送成功后，才执行输入框清空！
-                    if (sent && SettingsService.Instance.IsClearOnSendEnabled)
+                    if (sent && SettingsService.Instance.IsClearOnSendEnabled
+                        && submittedRevision == _inputRevision
+                        && string.Equals(MessageInputBox.Text, submittedInput, StringComparison.Ordinal))
                     {
                         _isClearingOnSend = true;
                         try

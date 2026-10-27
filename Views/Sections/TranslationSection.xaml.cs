@@ -10,6 +10,7 @@ namespace VrcChatboxDemo.Views.Sections;
 public sealed partial class TranslationSection : UserControl
 {
     private bool _isInitializing = true;
+    private bool _isLoadingModels = false;
 
     public TranslationSection()
     {
@@ -32,6 +33,7 @@ public sealed partial class TranslationSection : UserControl
         ShowRecognizedTextSwitch.IsOn = s.ShowRecognizedText;
         ShowTranslatedTextSwitch.IsOn = s.ShowTranslatedText;
         ShowLatencySwitch.IsOn = s.ShowTranslationLatency;
+        SentMessageTranslationSwitch.IsOn = s.IsSentMessageTranslationEnabled;
 
         _isInitializing = false;
 
@@ -109,33 +111,42 @@ public sealed partial class TranslationSection : UserControl
 
     private async Task LoadOllamaModelsAsync()
     {
-        string endpoint = SettingsService.Instance.OllamaEndpoint;
-        var models = await SettingsService.Instance.OllamaService.GetInstalledModelsAsync(endpoint);
-
-        OllamaModelComboBox.Items.Clear();
-        if (models.Count > 0)
+        if (_isLoadingModels) return;
+        _isLoadingModels = true;
+        try
         {
-            foreach (var m in models)
-            {
-                OllamaModelComboBox.Items.Add(m);
-            }
+            string endpoint = SettingsService.Instance.OllamaEndpoint;
+            var models = await SettingsService.Instance.OllamaService.GetInstalledModelsAsync(endpoint);
 
-            string current = SettingsService.Instance.OllamaModel;
-            int foundIdx = models.FindIndex(m => string.Equals(m, current, StringComparison.OrdinalIgnoreCase));
-            if (foundIdx >= 0)
+            OllamaModelComboBox.Items.Clear();
+            if (models.Count > 0)
             {
-                OllamaModelComboBox.SelectedIndex = foundIdx;
+                foreach (var m in models)
+                {
+                    OllamaModelComboBox.Items.Add(m);
+                }
+
+                string current = SettingsService.Instance.OllamaModel;
+                int foundIdx = models.FindIndex(m => string.Equals(m, current, StringComparison.OrdinalIgnoreCase));
+                if (foundIdx >= 0)
+                {
+                    OllamaModelComboBox.SelectedIndex = foundIdx;
+                }
+                else
+                {
+                    int hyIdx = models.FindIndex(m => m.Contains("HY-MT", StringComparison.OrdinalIgnoreCase));
+                    OllamaModelComboBox.SelectedIndex = hyIdx >= 0 ? hyIdx : 0;
+                }
             }
             else
             {
-                int hyIdx = models.FindIndex(m => m.Contains("HY-MT", StringComparison.OrdinalIgnoreCase));
-                OllamaModelComboBox.SelectedIndex = hyIdx >= 0 ? hyIdx : 0;
+                OllamaModelComboBox.Items.Add(SettingsService.Instance.OllamaModel);
+                OllamaModelComboBox.SelectedIndex = 0;
             }
         }
-        else
+        finally
         {
-            OllamaModelComboBox.Items.Add(SettingsService.Instance.OllamaModel);
-            OllamaModelComboBox.SelectedIndex = 0;
+            _isLoadingModels = false;
         }
     }
 
@@ -192,7 +203,7 @@ public sealed partial class TranslationSection : UserControl
 
     private async void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_isInitializing) return;
+        if (_isInitializing || _isLoadingModels) return;
         string oldModel = SettingsService.Instance.OllamaModel;
         string? newModel = null;
         if (OllamaModelComboBox.SelectedItem is string modelStr)
@@ -220,6 +231,23 @@ public sealed partial class TranslationSection : UserControl
                 }
                 catch { }
             }
+        }
+    }
+
+    private void OllamaModelComboBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_isInitializing || _isLoadingModels) return;
+
+        // 选中列表项的情况已由 SelectionChanged 处理；这里只处理“用户手输了
+        // 列表外模型名”的情况。否则加载时回退选中项会在失焦时把配置改掉。
+        if (OllamaModelComboBox.SelectedItem is string) return;
+
+        string? typed = OllamaModelComboBox.Text?.Trim();
+        if (!string.IsNullOrEmpty(typed) &&
+            !string.Equals(typed, SettingsService.Instance.OllamaModel, StringComparison.OrdinalIgnoreCase))
+        {
+            SettingsService.Instance.OllamaModel = typed;
+            SettingsService.Instance.AddLog("Translation", $"翻译模型已设为手输模型 [{typed}]", true);
         }
     }
 
@@ -286,5 +314,13 @@ public sealed partial class TranslationSection : UserControl
         if (_isInitializing) return;
         SettingsService.Instance.ShowTranslationLatency = ShowLatencySwitch.IsOn;
         SettingsService.Instance.NotifyDisplaySettingsChanged();
+    }
+
+    private void SentMessageTranslationSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_isInitializing) return;
+        SettingsService.Instance.IsSentMessageTranslationEnabled = SentMessageTranslationSwitch.IsOn;
+        SettingsService.Instance.AddLog("Translation",
+            $"发送消息自动翻译已{(SentMessageTranslationSwitch.IsOn ? "开启" : "关闭")}", true);
     }
 }

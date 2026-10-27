@@ -10,6 +10,9 @@
     <StackPanel Spacing="18">
         <StackPanel Spacing="4">
             <TextBlock Text="快捷热键" Style="{StaticResource TitleTextBlockStyle}" />
+            <TextBlock Text="点击热键框后按下新组合键；按 Esc 取消。"
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </StackPanel>
 
         <!-- 1) 唤出窗口并聚焦 -->
@@ -33,8 +36,7 @@
                     <TextBox x:Name="HotkeyTextBox" Grid.Column="1" Header="唤出热键"
                              IsReadOnly="True"
                              PreviewKeyDown="HotkeyTextBox_PreviewKeyDown"
-                             HorizontalAlignment="Stretch"
-                             ToolTipService.ToolTip="在此框内按下任意快捷键自动生效，按 ESC 可取消修改" />
+                             HorizontalAlignment="Stretch" />
 
                     <Button x:Name="ResetHotkeyButton" Grid.Column="2" VerticalAlignment="Bottom"
                             Content="恢复默认" Click="ResetHotkeyButton_Click" Margin="0,0,0,1" />
@@ -65,8 +67,7 @@
                     <TextBox x:Name="ImmersiveHotkeyTextBox" Grid.Column="1" Header="沉浸模式热键"
                              IsReadOnly="True"
                              PreviewKeyDown="ImmersiveHotkeyTextBox_PreviewKeyDown"
-                             HorizontalAlignment="Stretch"
-                             ToolTipService.ToolTip="在此框内按下任意快捷键自动生效，按 ESC 可取消修改" />
+                             HorizontalAlignment="Stretch" />
 
                     <Button x:Name="ResetImmersiveHotkeyButton" Grid.Column="2" VerticalAlignment="Bottom"
                             Content="恢复默认" Click="ResetImmersiveHotkeyButton_Click" Margin="0,0,0,1" />

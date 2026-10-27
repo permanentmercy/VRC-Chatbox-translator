@@ -151,6 +151,18 @@ public sealed partial class HotkeySection : UserControl
         if (isShift) { mods |= HotkeyService.MOD_SHIFT; parts.Add("Shift"); }
         if (isWin) { mods |= HotkeyService.MOD_WIN; parts.Add("Win"); }
 
+        // 无修饰键的普通字符键会被注册成全局裸键：用户在任何程序里敲这个字母
+        // 都会触发唤出窗口，等于抢走正常输入。只允许 F1~F24 这类功能键免修饰。
+        if (mods == 0 && !IsFunctionKey(key))
+        {
+            var infoBar = isImmersive ? ImmersiveHotkeyStatusInfoBar : HotkeyStatusInfoBar;
+            infoBar.Severity = InfoBarSeverity.Warning;
+            infoBar.Title = "热键至少需要一个修饰键";
+            infoBar.Message = $"单独的 {FormatKeyName(key)} 会抢占其他程序的正常按键，请搭配 Ctrl / Alt / Shift / Win 使用（F1~F24 可直接使用）。";
+            infoBar.IsOpen = true;
+            return;
+        }
+
         string keyName = FormatKeyName(key);
         parts.Add(keyName);
 
@@ -175,6 +187,12 @@ public sealed partial class HotkeySection : UserControl
             HotkeyTextBox.Text = fullHotkeyString;
         }
         UpdateHotkeyStatusVisuals();
+    }
+
+    private static bool IsFunctionKey(VirtualKey key)
+    {
+        int vk = (int)key;
+        return vk >= 0x70 && vk <= 0x87; // VK_F1 ~ VK_F24
     }
 
     private static string FormatKeyName(VirtualKey key)

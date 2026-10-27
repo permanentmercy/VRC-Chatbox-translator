@@ -26,6 +26,7 @@ public class AppConfig
         "chat",
         "speech",
         "translation",
+        "tts",
         "hotkey",
         "interaction",
         "network"
@@ -104,6 +105,12 @@ public class AppConfig
     /// </summary>
     public string OllamaRequestFrequency { get; set; } = SettingsService.DefaultRequestFrequencyMode;
 
+    /// <summary>
+    /// 发送消息时是否自动把「我发出去的文字」翻译成目标语言。
+    /// 翻译结果会写入变量 {sent_translation}，可用于常驻模板，也可交给 TTS 朗读。
+    /// </summary>
+    public bool IsSentMessageTranslationEnabled { get; set; } = true;
+
     // ==========================================
     // 外部 Inbound 服务端口与设置
     // ==========================================
@@ -139,4 +146,10 @@ public class AppConfig
     public float TtsMonitorVolume { get; set; } = 0.8f;
     public bool IsTtsAutoReadSentMessage { get; set; } = false;
     public bool IsTtsAutoReadTranslation { get; set; } = false;
+
+    /// <summary>
+    /// 发送消息时，自动朗读「我发出去的消息的翻译」而不是原文。
+    /// 与 <see cref="IsTtsAutoReadSentMessage"/> 同时开启时优先朗读译文，避免重复播报。
+    /// </summary>
+    public bool IsTtsAutoReadSentTranslation { get; set; } = false;
 }

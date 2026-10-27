@@ -14,6 +14,7 @@ namespace VrcChatboxDemo.Views.Sections;
 public sealed partial class TtsSection : UserControl
 {
     private bool _isInitializing = true;
+    private bool _isLoadingDevices = false;
     private List<TtsDeviceInfo> _devices = new();
     private List<TtsModelOption> _modelOptions = new();
     private List<TtsPromptOption> _promptOptions = new();
@@ -43,7 +44,10 @@ public sealed partial class TtsSection : UserControl
 
         AutoReadSentMessageSwitch.IsOn = s.IsTtsAutoReadSentMessage;
         AutoReadTranslationSwitch.IsOn = s.IsTtsAutoReadTranslation;
+        AutoReadSentTranslationSwitch.IsOn = s.IsTtsAutoReadSentTranslation;
 
+        // 先退订再订阅：页面缓存下 Loaded 可能重复触发，直接 += 会叠加多份处理函数。
+        TtsService.Instance.StateChanged -= OnTtsServiceStateChanged;
         TtsService.Instance.StateChanged += OnTtsServiceStateChanged;
 
         UpdateStatusIndicator(TtsService.Instance.State, TtsService.Instance.StatusMessage);
@@ -216,15 +220,37 @@ public sealed partial class TtsSection : UserControl
     private void FollowPromptForWeight(string checkpointFile)
     {
         string target = Path.GetFileNameWithoutExtension(checkpointFile) + "_prompt.pt";
-        int idx = _promptOptions.FindIndex(
-            p => string.Equals(p.FileName, target, StringComparison.OrdinalIgnoreCase));
-        if (idx < 0) return;
+
+        // 目录里没有这个配套音色就不擅自改（Items 里的“未找到”占位项不算，它不是真实文件）。
+        if (!_promptOptions.Exists(
+                p => string.Equals(p.FileName, target, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        // 关键：不能把 _promptOptions 的下标当成 Items 的下标用。
+        // LoadPromptOptions 在“保存的音色文件不在目录中”时会在 Items[0] 插入一条占位项，
+        // 此时 Items 比 _promptOptions 多一项、后面整体后移一位：用数组下标会选中隔壁
+        // 权重的音色（idx==0 时选中那条占位项），并把错误的文件名持久化到 TtsPromptFile。
+        // Items 与 _promptOptions 既不保证等长也不保证同序，只能按 Tag 建立映射。
+        int itemIdx = -1;
+        for (int i = 0; i < PromptNameComboBox.Items.Count; i++)
+        {
+            if (PromptNameComboBox.Items[i] is ComboBoxItem item &&
+                item.Tag is string tag &&
+                string.Equals(tag, target, StringComparison.OrdinalIgnoreCase))
+            {
+                itemIdx = i;
+                break;
+            }
+        }
+        if (itemIdx < 0) return;
 
         bool same = (PromptNameComboBox.SelectedItem as ComboBoxItem)?.Tag is string cur &&
                     string.Equals(cur, target, StringComparison.OrdinalIgnoreCase);
         if (same) return;
 
-        PromptNameComboBox.SelectedIndex = idx;   // 触发 SelectionChanged 完成持久化
+        PromptNameComboBox.SelectedIndex = itemIdx;   // 触发 SelectionChanged 完成持久化
     }
 
     // ------------------------------------------------------------------ //
@@ -358,83 +384,79 @@ public sealed partial class TtsSection : UserControl
 
     private void LoadAudioDevices()
     {
-        _devices = TtsService.Instance.GetPlaybackDevices();
-
-        VirtualMicComboBox.Items.Clear();
-        MonitorDeviceComboBox.Items.Clear();
-
-        if (_devices.Count == 0)
+        _isLoadingDevices = true;
+        try
         {
-            VirtualMicComboBox.Items.Add(new ComboBoxItem { Content = "未检测到播放设备", Tag = "" });
-            MonitorDeviceComboBox.Items.Add(new ComboBoxItem { Content = "未检测到播放设备", Tag = "" });
-            VirtualMicComboBox.SelectedIndex = 0;
-            MonitorDeviceComboBox.SelectedIndex = 0;
+            _devices = TtsService.Instance.GetPlaybackDevices();
+
+            VirtualMicComboBox.Items.Clear();
+            MonitorDeviceComboBox.Items.Clear();
+
+            if (_devices.Count == 0)
+            {
+                VirtualMicComboBox.Items.Add(new ComboBoxItem { Content = "未检测到播放设备", Tag = "" });
+                MonitorDeviceComboBox.Items.Add(new ComboBoxItem { Content = "未检测到播放设备", Tag = "" });
+                VirtualMicComboBox.SelectedIndex = 0;
+                MonitorDeviceComboBox.SelectedIndex = 0;
+                UpdateVirtualCardInfo(isVirtual: false, hasAnyDevice: false);
+                return;
+            }
+
+            string savedMicId = SettingsService.Instance.TtsVirtualMicDeviceId;
+            string savedMonitorId = SettingsService.Instance.TtsMonitorDeviceId;
+
+            for (int i = 0; i < _devices.Count; i++)
+            {
+                var d = _devices[i];
+                VirtualMicComboBox.Items.Add(new ComboBoxItem { Content = d.Name, Tag = d.Id });
+                MonitorDeviceComboBox.Items.Add(new ComboBoxItem { Content = d.Name, Tag = d.Id });
+            }
+
+            // 已保存的选择优先：即使它是物理设备也尊重用户选择，不能每次打开页面都强制改回虚拟声卡。
+            // 只有从未保存过（或保存的设备已被拔掉）时，才自动推荐虚拟声卡/默认设备。
+            int selectedMicIdx = !string.IsNullOrEmpty(savedMicId)
+                ? _devices.FindIndex(d => string.Equals(d.Id, savedMicId, StringComparison.OrdinalIgnoreCase))
+                : -1;
+            if (selectedMicIdx < 0)
+            {
+                selectedMicIdx = _devices.FindIndex(d => d.IsVirtualRecommendation);
+                if (selectedMicIdx < 0) selectedMicIdx = 0;
+            }
+
+            int selectedMonitorIdx = !string.IsNullOrEmpty(savedMonitorId)
+                ? _devices.FindIndex(d => string.Equals(d.Id, savedMonitorId, StringComparison.OrdinalIgnoreCase))
+                : -1;
+            if (selectedMonitorIdx < 0)
+            {
+                selectedMonitorIdx = _devices.FindIndex(d => d.IsDefault);
+                if (selectedMonitorIdx < 0) selectedMonitorIdx = 0;
+            }
+
+            VirtualMicComboBox.SelectedIndex = Math.Clamp(selectedMicIdx, 0, _devices.Count - 1);
+            MonitorDeviceComboBox.SelectedIndex = Math.Clamp(selectedMonitorIdx, 0, _devices.Count - 1);
+
+            // 注意：这里不再回写 TtsVirtualMicDeviceId / TtsMonitorDeviceId。
+            // 加载页面不是用户操作，回写会把“保存的设备暂时不可用”永久覆盖成回退设备。
+            UpdateVirtualCardInfo(_devices[selectedMicIdx].IsVirtualRecommendation, hasAnyDevice: true);
+        }
+        finally
+        {
+            _isLoadingDevices = false;
+        }
+    }
+
+    private void UpdateVirtualCardInfo(bool isVirtual, bool hasAnyDevice)
+    {
+        if (!hasAnyDevice)
+        {
+            VirtualCardInfoBar.Severity = InfoBarSeverity.Warning;
+            VirtualCardInfoBar.Title = "未检测到任何播放设备";
+            VirtualCardInfoBar.Message = "请先连接耳机/扬声器或安装虚拟声卡，然后点击“刷新设备”。";
+            DownloadVbCableButton.Visibility = Visibility.Visible;
             return;
         }
 
-        string savedMicId = SettingsService.Instance.TtsVirtualMicDeviceId;
-        string savedMonitorId = SettingsService.Instance.TtsMonitorDeviceId;
-
-        int selectedMicIdx = -1;
-        int selectedMonitorIdx = -1;
-
-        for (int i = 0; i < _devices.Count; i++)
-        {
-            var d = _devices[i];
-            var item1 = new ComboBoxItem { Content = d.Name, Tag = d.Id };
-            var item2 = new ComboBoxItem { Content = d.Name, Tag = d.Id };
-
-            VirtualMicComboBox.Items.Add(item1);
-            MonitorDeviceComboBox.Items.Add(item2);
-
-            if (selectedMicIdx < 0 && !string.IsNullOrEmpty(savedMicId) && string.Equals(d.Id, savedMicId, StringComparison.OrdinalIgnoreCase))
-            {
-                selectedMicIdx = i;
-            }
-            if (selectedMonitorIdx < 0 && !string.IsNullOrEmpty(savedMonitorId) && string.Equals(d.Id, savedMonitorId, StringComparison.OrdinalIgnoreCase))
-            {
-                selectedMonitorIdx = i;
-            }
-        }
-
-        // 虚拟麦克风必须优先绑定虚拟声卡 (如 CABLE Input)，坚决避免将推流目标误指向物理扬声器
-        int virtualRecIdx = _devices.FindIndex(d => d.IsVirtualRecommendation);
-        if (virtualRecIdx >= 0)
-        {
-            // 如果此前未保存或此前保存的不是虚拟声卡，纠正为虚拟声卡
-            if (selectedMicIdx < 0 || !_devices[selectedMicIdx].IsVirtualRecommendation)
-            {
-                selectedMicIdx = virtualRecIdx;
-            }
-        }
-        else if (selectedMicIdx < 0)
-        {
-            selectedMicIdx = 0;
-        }
-
-        // 耳返设备默认选中系统默认播放设备（通常为物理耳机/扬声器）
-        if (selectedMonitorIdx < 0)
-        {
-            selectedMonitorIdx = _devices.FindIndex(d => d.IsDefault);
-            if (selectedMonitorIdx < 0) selectedMonitorIdx = 0;
-        }
-
-        VirtualMicComboBox.SelectedIndex = Math.Clamp(selectedMicIdx, 0, _devices.Count - 1);
-        MonitorDeviceComboBox.SelectedIndex = Math.Clamp(selectedMonitorIdx, 0, _devices.Count - 1);
-
-        // 自动提交当前选中的设备 ID
-        if (VirtualMicComboBox.SelectedItem is ComboBoxItem micItem && micItem.Tag is string mId)
-        {
-            SettingsService.Instance.TtsVirtualMicDeviceId = mId;
-        }
-        if (MonitorDeviceComboBox.SelectedItem is ComboBoxItem monItem && monItem.Tag is string monId)
-        {
-            SettingsService.Instance.TtsMonitorDeviceId = monId;
-        }
-
-        // 动态展示声卡状态引导
-        bool hasVirtual = _devices.Any(d => d.IsVirtualRecommendation);
-        if (hasVirtual)
+        if (isVirtual)
         {
             VirtualCardInfoBar.Severity = InfoBarSeverity.Success;
             VirtualCardInfoBar.Title = "已检测到虚拟声卡，推流目标已设为虚拟声卡";
@@ -444,8 +466,8 @@ public sealed partial class TtsSection : UserControl
         else
         {
             VirtualCardInfoBar.Severity = InfoBarSeverity.Warning;
-            VirtualCardInfoBar.Title = "未检测到虚拟声卡，VRChat 内暂时听不到 TTS 语音";
-            VirtualCardInfoBar.Message = "Windows 不允许软件直接向物理麦克风写入音频。当前推流目标为普通播放设备，声音只会从本机扬声器或耳机放出，游戏内无法采集。请安装虚拟声卡跳线 (推流目标选 CABLE Input，VRChat 麦克风选 CABLE Output)，然后点击上方刷新设备列表。";
+            VirtualCardInfoBar.Title = "当前推流目标是普通播放设备，VRChat 内可能听不到 TTS 语音";
+            VirtualCardInfoBar.Message = "Windows 不允许软件直接向物理麦克风写入音频。请安装虚拟声卡跳线，把推流目标选为 CABLE Input，并在 VRChat 中把麦克风选为 CABLE Output；或点击上方刷新设备列表。";
             DownloadVbCableButton.Visibility = Visibility.Visible;
         }
     }
@@ -477,12 +499,29 @@ public sealed partial class TtsSection : UserControl
     {
         if (TtsService.Instance.State == TtsServerState.Starting) return;
         StartServerButton.IsEnabled = false;
-        await TtsService.Instance.StartManagedServerAsync();
+        try
+        {
+            await TtsService.Instance.StartManagedServerAsync();
+        }
+        finally
+        {
+            UpdateStatusIndicator(TtsService.Instance.State, TtsService.Instance.StatusMessage);
+        }
     }
 
-    private void StopServerButton_Click(object sender, RoutedEventArgs e)
+    private async void StopServerButton_Click(object sender, RoutedEventArgs e)
     {
-        TtsService.Instance.StopManagedServer();
+        // StopManagedServer 内部同步执行 netstat / PowerShell 进程清理（各自最多 3 秒），
+        // 直接调用会冻结 UI，这里放到后台线程。
+        StopServerButton.IsEnabled = false;
+        try
+        {
+            await Task.Run(TtsService.Instance.StopManagedServer);
+        }
+        finally
+        {
+            UpdateStatusIndicator(TtsService.Instance.State, TtsService.Instance.StatusMessage);
+        }
     }
 
     private void ServerEndpointTextBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -492,6 +531,17 @@ public sealed partial class TtsSection : UserControl
         if (!string.IsNullOrEmpty(ep))
         {
             SettingsService.Instance.TtsServerEndpoint = ep;
+
+            // 托管启动使用 TtsServerPort，而客户端请求使用端点里的端口。
+            // UI 只暴露端点，若不把本机端点的端口同步过去，用户改成 :9000 后
+            // 服务端仍会监听 9880，合成请求必然连不上。
+            if (Uri.TryCreate(ep, UriKind.Absolute, out var uri) &&
+                uri.Port > 0 &&
+                !uri.IsDefaultPort &&
+                (uri.IsLoopback || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)))
+            {
+                SettingsService.Instance.TtsServerPort = uri.Port;
+            }
         }
     }
 
@@ -508,10 +558,14 @@ public sealed partial class TtsSection : UserControl
 
     private void VirtualMicComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_isInitializing) return;
+        if (_isInitializing || _isLoadingDevices) return;
         if (VirtualMicComboBox.SelectedItem is ComboBoxItem item && item.Tag is string id)
         {
             SettingsService.Instance.TtsVirtualMicDeviceId = id;
+            if (_devices.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase)) is { } dev)
+            {
+                UpdateVirtualCardInfo(dev.IsVirtualRecommendation, hasAnyDevice: true);
+            }
         }
     }
 
@@ -529,7 +583,7 @@ public sealed partial class TtsSection : UserControl
 
     private void MonitorDeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_isInitializing) return;
+        if (_isInitializing || _isLoadingDevices) return;
         if (MonitorDeviceComboBox.SelectedItem is ComboBoxItem item && item.Tag is string id)
         {
             SettingsService.Instance.TtsMonitorDeviceId = id;
@@ -622,5 +676,13 @@ public sealed partial class TtsSection : UserControl
     {
         if (_isInitializing) return;
         SettingsService.Instance.IsTtsAutoReadTranslation = AutoReadTranslationSwitch.IsOn;
+    }
+
+    private void AutoReadSentTranslationSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_isInitializing) return;
+        SettingsService.Instance.IsTtsAutoReadSentTranslation = AutoReadSentTranslationSwitch.IsOn;
+        SettingsService.Instance.AddLog("TTS Switch",
+            $"朗读发送消息译文已{(AutoReadSentTranslationSwitch.IsOn ? "开启" : "关闭")}", true);
     }
 }

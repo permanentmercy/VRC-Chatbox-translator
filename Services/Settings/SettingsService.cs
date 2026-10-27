@@ -44,12 +44,14 @@ public partial class SettingsService
         get => SpeechService.CurrentModelType;
         set
         {
-            if (SpeechService.CurrentModelType != value)
-            {
-                Config.SpeechModelType = value;
-                _ = SpeechService.SwitchModelAsync(value);
-                SaveConfigDebounced();
-            }
+            string targetModel = (value ?? "tiny").Trim().ToLowerInvariant();
+            if (targetModel != "tiny" && targetModel != "base" && targetModel != "small") targetModel = "tiny";
+
+            // CurrentModelType 是已加载的模型，不能用它过滤尚在排队的用户意图：
+            // tiny→base 加载期间再选 tiny 也必须入队。服务会在模型锁内安全去重。
+            Config.SpeechModelType = targetModel;
+            _ = SpeechService.SwitchModelAsync(targetModel);
+            SaveConfigDebounced();
         }
     }
 
@@ -61,6 +63,7 @@ public partial class SettingsService
             if (Config.SpeechEngine != value)
             {
                 Config.SpeechEngine = value;
+                Interlocked.Increment(ref _speechStateVersion);
                 SaveConfigDebounced();
                 UpdateLanguageVariable();
                 if (IsSpeechRecognitionEnabled)
@@ -249,6 +252,23 @@ public partial class SettingsService
         set { if (Config.IsDirectSendEnabled != value) { Config.IsDirectSendEnabled = value; SaveConfigDebounced(); } }
     }
 
+    /// <summary>
+    /// 外部接口的用户意图开关。与运行时 <see cref="InboundService.IsRunning"/> 分离：
+    /// 端口暂时被占用导致启动失败时，不能把用户“想开启”的意图永久写成 false。
+    /// </summary>
+    public bool InboundEnabled
+    {
+        get => Config.InboundEnabled;
+        set
+        {
+            if (Config.InboundEnabled != value)
+            {
+                Config.InboundEnabled = value;
+                SaveConfigDebounced();
+            }
+        }
+    }
+
     public bool IsSoundEnabled
     {
         get => Config.IsSoundEnabled;
@@ -394,10 +414,19 @@ public partial class SettingsService
     public bool IsImmersiveMode { get; private set; } = false;
 
     // 语音识别与翻译选项
+    // 用户期望状态；引擎的迟到启动事件不能把一次明确的关闭改回开启。
     public bool IsSpeechRecognitionEnabled
     {
         get => Config.IsSpeechRecognitionEnabled;
-        set { if (Config.IsSpeechRecognitionEnabled != value) { Config.IsSpeechRecognitionEnabled = value; SaveConfigDebounced(); } }
+        set
+        {
+            if (Config.IsSpeechRecognitionEnabled != value)
+            {
+                Config.IsSpeechRecognitionEnabled = value;
+                Interlocked.Increment(ref _speechStateVersion);
+                SaveConfigDebounced();
+            }
+        }
     }
     public string SpeechLanguageTag
     {
@@ -507,6 +536,16 @@ public partial class SettingsService
         get => Config.TargetLanguage;
         set { if (Config.TargetLanguage != value) { Config.TargetLanguage = value; SaveConfigDebounced(); } }
     }
+
+    /// <summary>
+    /// 发送消息时自动翻译「我发出去的文字」。
+    /// 结果写入变量 {sent_translation}，可被常驻模板引用或交给 TTS 朗读。
+    /// </summary>
+    public bool IsSentMessageTranslationEnabled
+    {
+        get => Config.IsSentMessageTranslationEnabled;
+        set { if (Config.IsSentMessageTranslationEnabled != value) { Config.IsSentMessageTranslationEnabled = value; SaveConfigDebounced(); } }
+    }
     public const string DefaultOllamaPromptTemplate = "Translate the following text into {targetLanguage}. Output ONLY the translated text without explanation, notes, or quotes:\n\n{text}";
     public string OllamaPromptTemplate
     {
@@ -602,6 +641,16 @@ public partial class SettingsService
     {
         get => Config.IsTtsAutoReadTranslation;
         set { if (Config.IsTtsAutoReadTranslation != value) { Config.IsTtsAutoReadTranslation = value; SaveConfigDebounced(); } }
+    }
+
+    /// <summary>
+    /// 发送消息时自动朗读「我发出去的消息的翻译」。
+    /// 与 <see cref="IsTtsAutoReadSentMessage"/> 同时开启时优先朗读译文，避免重复播报。
+    /// </summary>
+    public bool IsTtsAutoReadSentTranslation
+    {
+        get => Config.IsTtsAutoReadSentTranslation;
+        set { if (Config.IsTtsAutoReadSentTranslation != value) { Config.IsTtsAutoReadSentTranslation = value; SaveConfigDebounced(); } }
     }
 
     private string _lastTtsSpokenText = string.Empty;
@@ -1073,26 +1122,7 @@ public partial class SettingsService
             }
         };
 
-        SpeechService.ListeningStateChanged += listening =>
-        {
-            if (string.Equals(SpeechEngine, "Whisper", StringComparison.OrdinalIgnoreCase))
-            {
-                IsSpeechRecognitionEnabled = listening;
-                if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-                {
-                    App.DispatcherQueueInstance.TryEnqueue(() =>
-                    {
-                        SpeechRecognitionStateChanged?.Invoke(listening);
-                        DisplaySettingsChanged?.Invoke();
-                    });
-                }
-                else
-                {
-                    SpeechRecognitionStateChanged?.Invoke(listening);
-                    DisplaySettingsChanged?.Invoke();
-                }
-            }
-        };
+        SpeechService.ListeningStateChanged += listening => OnSpeechRunningStateChanged("Whisper", listening);
 
         LiveCaptionsService.SpeechHypothesis += interimText =>
         {
@@ -1154,26 +1184,7 @@ public partial class SettingsService
             }
         };
 
-        LiveCaptionsService.RunningStateChanged += running =>
-        {
-            if (string.Equals(SpeechEngine, "LiveCaptions", StringComparison.OrdinalIgnoreCase))
-            {
-                IsSpeechRecognitionEnabled = running;
-                if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-                {
-                    App.DispatcherQueueInstance.TryEnqueue(() =>
-                    {
-                        SpeechRecognitionStateChanged?.Invoke(running);
-                        DisplaySettingsChanged?.Invoke();
-                    });
-                }
-                else
-                {
-                    SpeechRecognitionStateChanged?.Invoke(running);
-                    DisplaySettingsChanged?.Invoke();
-                }
-            }
-        };
+        LiveCaptionsService.RunningStateChanged += running => OnSpeechRunningStateChanged("LiveCaptions", running);
 
         PersistentTextService.IsEnabled = Config.IsPersistentTextEnabled;
         PersistentTextService.CustomText = Config.PersistentCustomText;

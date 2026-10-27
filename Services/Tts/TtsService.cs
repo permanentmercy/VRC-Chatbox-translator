@@ -24,6 +24,12 @@ public sealed class TtsService : IDisposable
 
     private readonly HttpClient _httpClient;
     private Process? _serverProcess;
+    private readonly object _serverProcessLock = new();
+    private long _serverGeneration;
+    private long _synthesisSequence;
+    // ResponseHeadersRead 之后 HttpClient.Timeout 不再覆盖正文；逐次读取单独限制空闲时间。
+    private readonly TimeSpan _streamReadTimeout = TimeSpan.FromMinutes(5);
+    private int _disposeStarted;
     private CancellationTokenSource? _activePlaybackCts;
     private readonly object _playbackLock = new();
     private readonly SemaphoreSlim _playbackQueueLock = new(1, 1);
@@ -79,23 +85,30 @@ public sealed class TtsService : IDisposable
             string defaultRenderId = string.Empty;
             try
             {
-                var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                using var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 defaultRenderId = def.ID;
             }
             catch { }
 
             foreach (var d in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
             {
-                bool isDef = string.Equals(d.ID, defaultRenderId, StringComparison.OrdinalIgnoreCase);
-                string name = d.FriendlyName ?? "未知设备";
-                bool isVirtual = IsVirtualAudioDevice(name);
+                try
+                {
+                    bool isDef = string.Equals(d.ID, defaultRenderId, StringComparison.OrdinalIgnoreCase);
+                    string name = d.FriendlyName ?? "未知设备";
+                    bool isVirtual = IsVirtualAudioDevice(name);
 
-                devices.Add(new TtsDeviceInfo(
-                    Id: d.ID,
-                    Name: (isVirtual ? "★ [推荐虚拟声卡] " : "") + name,
-                    IsVirtualRecommendation: isVirtual,
-                    IsDefault: isDef
-                ));
+                    devices.Add(new TtsDeviceInfo(
+                        Id: d.ID,
+                        Name: (isVirtual ? "★ [推荐虚拟声卡] " : "") + name,
+                        IsVirtualRecommendation: isVirtual,
+                        IsDefault: isDef
+                    ));
+                }
+                finally
+                {
+                    d.Dispose();
+                }
             }
 
             // 排序：优先将推荐的虚拟声卡排在最前
@@ -329,11 +342,17 @@ public sealed class TtsService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         string lower = name.ToLowerInvariant();
+
+        // 只认真正的虚拟声卡/虚拟线缆。不能用 "line " 这种宽泛子串：
+        // 物理设备 "Line Out (Realtek Audio)" 会被误判成虚拟声卡，
+        // 导致推流目标被强制指向物理输出，VRChat 完全收不到 TTS 声音。
         return lower.Contains("cable") ||
                lower.Contains("virtual") ||
                lower.Contains("voicemeeter") ||
                lower.Contains("vb-audio") ||
-               lower.Contains("line ");
+               lower.Contains("vb-cable") ||
+               lower.Contains("blackhole") ||
+               lower.Contains("loopback");
     }
 
     /// <summary>
@@ -347,7 +366,7 @@ public sealed class TtsService : IDisposable
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            var resp = await _httpClient.GetAsync(healthUrl, cts.Token);
+            using var resp = await _httpClient.GetAsync(healthUrl, cts.Token);
             if (resp.IsSuccessStatusCode)
             {
                 string json = await resp.Content.ReadAsStringAsync(cts.Token);
@@ -420,10 +439,23 @@ public sealed class TtsService : IDisposable
             return false;
         }
 
-        await _serverStartLock.WaitAsync();
+        // 使用非阻塞获取：启动流程最长会轮询 35 秒（模型加载），
+        // 若这里用 WaitAsync() 阻塞，UI 线程上的第二次点击会一直卡住且没有任何反馈。
+        if (!await _serverStartLock.WaitAsync(0))
+        {
+            LogOccurred?.Invoke("[Server] 已有启动流程在进行中，请等待其完成。");
+            return false;
+        }
+
+        Process? startedProc = null;
+        long generation;
+        lock (_serverProcessLock)
+        {
+            generation = _serverGeneration;
+        }
         try
         {
-            if (State == TtsServerState.Starting)
+            if (Volatile.Read(ref _disposeStarted) != 0 || State == TtsServerState.Starting)
             {
                 return false;
             }
@@ -436,11 +468,15 @@ public sealed class TtsService : IDisposable
 
             // 1. 先探测是否已经有运行中的服务（例如用户此前已启动或独立启动）
             var health = await CheckHealthAsync(cfg.TtsServerEndpoint);
-            if (health != null && health.Ready)
+            lock (_serverProcessLock)
             {
-                string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
-                SetState(TtsServerState.Ready, $"已成功连接到运行中的 IndexTTS 服务 (模型: {health.Model}, {modeDesc})");
-                return true;
+                if (_serverGeneration != generation || Volatile.Read(ref _disposeStarted) != 0) return false;
+                if (health != null && health.Ready)
+                {
+                    string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
+                    SetState(TtsServerState.Ready, $"已成功连接到运行中的 IndexTTS 服务 (模型: {health.Model}, {modeDesc})");
+                    return true;
+                }
             }
 
             // 2. 检查 Python 解释器与服务端脚本是否存在
@@ -455,10 +491,21 @@ public sealed class TtsService : IDisposable
                 return false;
             }
 
-            // 3. 启动后台静默进程前彻底清理所有旧残留
-            StopManagedServer();
+            // 只回收本实例之前创建的进程。端口占用或同名脚本不代表进程属于本应用。
+            Process? previous;
+            lock (_serverProcessLock)
+            {
+                if (_serverGeneration != generation || Volatile.Read(ref _disposeStarted) != 0) return false;
+                previous = _serverProcess;
+                _serverProcess = null;
+            }
+            await Task.Run(() => StopOwnedProcess(previous));
 
-            SetState(TtsServerState.Starting, "正在启动 IndexTTS 后台服务并加载模型 (耗时约 15~20 秒)...");
+            lock (_serverProcessLock)
+            {
+                if (_serverGeneration != generation || Volatile.Read(ref _disposeStarted) != 0) return false;
+                SetState(TtsServerState.Starting, "正在启动 IndexTTS 后台服务并加载模型 (耗时约 15~20 秒)...");
+            }
 
             string workDir = Path.GetDirectoryName(cfg.TtsServerScriptPath) ?? "";
 
@@ -480,6 +527,7 @@ public sealed class TtsService : IDisposable
             };
 
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            startedProc = proc;
 
             proc.OutputDataReceived += (s, e) =>
             {
@@ -499,23 +547,44 @@ public sealed class TtsService : IDisposable
             proc.EnableRaisingEvents = true;
             proc.Exited += (s, e) =>
             {
-                if (_serverProcess == proc)
+                lock (_serverProcessLock)
                 {
-                    _serverProcess = null;
-                    SetState(TtsServerState.Stopped, "TTS 引擎已停止");
+                    if (_serverProcess == proc)
+                    {
+                        // 保留句柄直至显式停止/再次启动，以便确定归属并统一释放。
+                        SetState(TtsServerState.Stopped, "TTS 引擎已停止");
+                    }
                 }
             };
 
-            proc.Start();
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
-            _serverProcess = proc;
+            lock (_serverProcessLock)
+            {
+                if (_serverGeneration != generation || Volatile.Read(ref _disposeStarted) != 0)
+                {
+                    proc.Dispose();
+                    return false;
+                }
+                // 启动与登记必须原子化：Stop/Dispose 不能漏掉尚未登记的新进程。
+                proc.Start();
+                _serverProcess = proc;
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+            }
 
             // 4. 异步轮询等待就绪状态 (最多等待 35 秒)
             var sw = Stopwatch.StartNew();
             while (sw.ElapsedMilliseconds < 35000)
             {
                 await Task.Delay(1000);
+
+                // StopManagedServer 会先把 _serverProcess 置空再 Dispose 进程。
+                // 一旦发现托管进程已被替换/停止，就必须立即退出启动等待，
+                // 否则 proc.HasExited 在 Dispose 后只会抛异常并被吞掉，循环会一直
+                // 跑到 35 秒超时，把“用户主动停止”误报成“启动超时”。
+                if (_serverProcess != proc)
+                {
+                    return false;
+                }
 
                 bool hasExited = false;
                 int exitCode = -1;
@@ -541,12 +610,22 @@ public sealed class TtsService : IDisposable
                 }
 
                 health = await CheckHealthAsync(cfg.TtsServerEndpoint);
-                if (health != null && health.Ready)
+                lock (_serverProcessLock)
                 {
-                    string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
-                    SetState(TtsServerState.Ready, $"IndexTTS 引擎加载就绪 (模型: {health.Model}, {modeDesc})");
-                    return true;
+                    if (_serverProcess != proc || _serverGeneration != generation) return false;
+                    if (health != null && health.Ready)
+                    {
+                        string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
+                        SetState(TtsServerState.Ready, $"IndexTTS 引擎加载就绪 (模型: {health.Model}, {modeDesc})");
+                        return true;
+                    }
                 }
+            }
+
+            // 超时也可能恰好发生在用户停止的同一瞬间；再确认一次托管进程仍是本次启动的进程。
+            if (_serverProcess != proc)
+            {
+                return false;
             }
 
             SetState(TtsServerState.Error, "启动超时：35 秒内未能完成权重加载");
@@ -554,7 +633,17 @@ public sealed class TtsService : IDisposable
         }
         catch (Exception ex)
         {
-            SetState(TtsServerState.Error, $"启动异常: {ex.Message}");
+            // 异常时也只终止本次创建的进程，不接管任何外部服务。
+            lock (_serverProcessLock)
+            {
+                if (_serverProcess == startedProc) _serverProcess = null;
+            }
+            await Task.Run(() => StopOwnedProcess(startedProc));
+            lock (_serverProcessLock)
+            {
+                if (_serverGeneration == generation && Volatile.Read(ref _disposeStarted) == 0)
+                    SetState(TtsServerState.Error, $"启动异常: {ex.Message}");
+            }
             return false;
         }
         finally
@@ -601,119 +690,45 @@ public sealed class TtsService : IDisposable
     }
 
     /// <summary>
-    /// 停止托管的 Python 后台进程，并清理占用 TTS 端口及残留的 tts_server 孤儿进程
+    /// 只停止本实例启动且持有句柄的 Python 进程；连接到外部服务不代表拥有该服务。
+    /// 不按端口、进程名或脚本文件名搜索/终止其它进程。
     /// </summary>
     public void StopManagedServer()
     {
-        // 1. 先杀托管进程（如果有）
-        var proc = _serverProcess;
-        _serverProcess = null;
-
-        if (proc != null)
+        StopPlayback();
+        Process? proc;
+        long generation;
+        lock (_serverProcessLock)
         {
-            try
-            {
-                bool hasExited = false;
-                try { hasExited = proc.HasExited; } catch { }
-                if (!hasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                    try { proc.WaitForExit(2000); } catch { }
-                }
-            }
-            catch { }
-            finally
-            {
-                try { proc.Dispose(); } catch { }
-            }
+            generation = ++_serverGeneration; // 使尚在健康检查/启动准备阶段的操作失效。
+            proc = _serverProcess;
+            _serverProcess = null;
+            _registeredModelAliases = null;
         }
-
-        // 2. 通过端口号查找并杀死占用 TTS 服务端口的所有残留进程
-        try
+        StopOwnedProcess(proc);
+        lock (_serverProcessLock)
         {
-            int port = SettingsService.Instance.Config.TtsServerPort;
-            KillProcessesByPort(port);
+            if (_serverGeneration == generation)
+                SetState(TtsServerState.Stopped, "TTS 引擎已停止（外部独立服务不会被终止）");
         }
-        catch { }
-
-        // 3. 兜底清理：查杀任何可能处于启动窗口期（尚未绑定 9880 端口）的 tts_server.py 孤儿 Python 进程
-        KillOrphanPythonServerProcesses();
-
-        SetState(TtsServerState.Stopped, "TTS 引擎已停止");
     }
 
-    /// <summary>
-    /// 兜底终止任何命令行包含 tts_server.py 的 Python 孤儿进程，杜绝未绑端口时的后台多进程堆积
-    /// </summary>
-    private static void KillOrphanPythonServerProcesses()
+    private static void StopOwnedProcess(Process? proc)
     {
+        if (proc == null) return;
         try
         {
-            var psi = new ProcessStartInfo
+            if (!proc.HasExited)
             {
-                FileName = "powershell.exe",
-                Arguments = "-NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*python*' -and $_.CommandLine -like '*tts_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var p = Process.Start(psi);
-            p?.WaitForExit(3000);
-        }
-        catch { }
-    }
-
-    /// <summary>
-    /// 通过 netstat 查找占用指定端口的进程并终止
-    /// </summary>
-    private static void KillProcessesByPort(int port)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                Arguments = $"/c netstat -ano | findstr :{port} | findstr LISTENING",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true
-            };
-            using var netstat = Process.Start(psi);
-            if (netstat == null) return;
-
-            string output = netstat.StandardOutput.ReadToEnd();
-            netstat.WaitForExit(3000);
-
-            // 从 netstat 输出中提取 PID（每行最后一个数字字段）
-            var pids = new HashSet<int>();
-            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-            {
-                string trimmed = line.Trim();
-                if (string.IsNullOrEmpty(trimmed)) continue;
-                // netstat -ano 格式: TCP 127.0.0.1:9880 0.0.0.0:0 LISTENING 12345
-                string[] parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length > 0 && int.TryParse(parts[^1], out int pid) && pid > 0)
-                {
-                    pids.Add(pid);
-                }
-            }
-
-            int currentPid = Environment.ProcessId;
-            foreach (int pid in pids)
-            {
-                if (pid == currentPid) continue; // 绝不杀自身
-                try
-                {
-                    using var p = Process.GetProcessById(pid);
-                    if (!p.HasExited)
-                    {
-                        p.Kill(entireProcessTree: true);
-                        p.WaitForExit(2000);
-                    }
-                }
-                catch { }
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(2000);
             }
         }
         catch { }
+        finally
+        {
+            try { proc.Dispose(); } catch { }
+        }
     }
 
     /// <summary>
@@ -741,6 +756,60 @@ public sealed class TtsService : IDisposable
         return Path.GetFileName(prompt);
     }
 
+    private (long Generation, long Sequence) BeginSynthesis(string message, CancellationToken ct)
+    {
+        lock (_serverProcessLock)
+        {
+            // 停止时已取消、但尚未运行到此处的播放任务，也不能重新开启一次合成状态。
+            if (ct.IsCancellationRequested || Volatile.Read(ref _disposeStarted) != 0)
+                return (-1, -1);
+            var operation = (_serverGeneration, ++_synthesisSequence);
+            SetState(TtsServerState.Synthesizing, message);
+            return operation;
+        }
+    }
+
+    private bool IsCurrentSynthesis((long Generation, long Sequence) operation)
+    {
+        lock (_serverProcessLock)
+        {
+            return operation.Generation == _serverGeneration && operation.Sequence == _synthesisSequence &&
+                   Volatile.Read(ref _disposeStarted) == 0;
+        }
+    }
+
+    private bool TrySetSynthesisState((long Generation, long Sequence) operation,
+        TtsServerState state, string message, TtsServerState? expectedState = null)
+    {
+        lock (_serverProcessLock)
+        {
+            // 检查与写入必须和 Stop 的 generation 更新共用锁，避免检查通过后才被停止。
+            if (!IsCurrentSynthesis(operation) || (expectedState.HasValue && State != expectedState.Value))
+                return false;
+            SetState(state, message);
+            return true;
+        }
+    }
+
+    private async Task<T> ReadStreamBodyAsync<T>(Func<CancellationToken, Task<T>> read,
+        (long Generation, long Sequence) operation, CancellationToken ct)
+    {
+        using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        readCts.CancelAfter(_streamReadTimeout);
+        try
+        {
+            // WaitAsync 同时约束不响应取消的内容流，超时后由枚举器释放 HTTP 响应和正文。
+            return await read(readCts.Token).WaitAsync(readCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            const string message = "流式音频读取超时";
+            TrySetSynthesisState(operation, TtsServerState.Error, message);
+            // 不能把超时当作 EOF：已播放过部分音频时 PlayStreamAsync 会误报成功。
+            throw new TimeoutException(message);
+        }
+    }
+
     /// <summary>
     /// 请求 IndexTTS 服务合成语音（免参考音频，纯模型推理）
     /// </summary>
@@ -755,8 +824,9 @@ public sealed class TtsService : IDisposable
         var cfg = SettingsService.Instance.Config;
         string ttsUrl = cfg.TtsServerEndpoint.TrimEnd('/') + "/tts";
 
-        var prevState = State;
-        SetState(TtsServerState.Synthesizing, $"正在合成语音: \"{rawText}\"...");
+        var operation = BeginSynthesis($"正在合成语音: \"{rawText}\"...", ct);
+        if (!IsCurrentSynthesis(operation))
+            return new TtsSynthesisResult(false, null, 0, 0, 24000, "合成请求已失效");
 
         var sw = Stopwatch.StartNew();
         try
@@ -771,42 +841,49 @@ public sealed class TtsService : IDisposable
             using var content = new StringContent(reqJson, Encoding.UTF8, "application/json");
 
             var resp = await _httpClient.PostAsync(ttsUrl, content, ct);
-            sw.Stop();
-
-            if (!resp.IsSuccessStatusCode)
+            using (resp)
             {
-                string errDetail = await resp.Content.ReadAsStringAsync(ct);
-                SetState(TtsServerState.Error, $"TTS 合成失败: HTTP {(int)resp.StatusCode}");
-                return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, 24000, errDetail);
+                sw.Stop();
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    string errDetail = await resp.Content.ReadAsStringAsync(ct);
+                    TrySetSynthesisState(operation, TtsServerState.Error, $"TTS 合成失败: HTTP {(int)resp.StatusCode}");
+                    return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, 24000, errDetail);
+                }
+
+                byte[] wavBytes = await resp.Content.ReadAsByteArrayAsync(ct);
+
+                double duration = 0;
+                if (resp.Headers.TryGetValues("X-Audio-Duration", out var durValues))
+                {
+                    double.TryParse(durValues.FirstOrDefault(), out duration);
+                }
+
+                int sr = 24000;
+                if (resp.Headers.TryGetValues("X-Sample-Rate", out var srValues) &&
+                    int.TryParse(srValues.FirstOrDefault(), out int parsedSampleRate) &&
+                    parsedSampleRate > 0)
+                {
+                    // TryParse 失败会把 out 参数写成 0；必须保留默认 24000，不能直接用失败结果覆盖。
+                    sr = parsedSampleRate;
+                }
+
+                if (!TrySetSynthesisState(operation, TtsServerState.Ready, $"合成成功 (耗时: {sw.ElapsedMilliseconds}ms, 时长: {duration:F2}s)"))
+                    return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, sr, "合成请求已失效");
+                SynthesisCompleted?.Invoke(rawText, duration, sw.ElapsedMilliseconds);
+
+                return new TtsSynthesisResult(true, wavBytes, duration, sw.ElapsedMilliseconds, sr, null);
             }
-
-            byte[] wavBytes = await resp.Content.ReadAsByteArrayAsync(ct);
-
-            double duration = 0;
-            if (resp.Headers.TryGetValues("X-Audio-Duration", out var durValues))
-            {
-                double.TryParse(durValues.FirstOrDefault(), out duration);
-            }
-
-            int sr = 24000;
-            if (resp.Headers.TryGetValues("X-Sample-Rate", out var srValues))
-            {
-                int.TryParse(srValues.FirstOrDefault(), out sr);
-            }
-
-            SetState(TtsServerState.Ready, $"合成成功 (耗时: {sw.ElapsedMilliseconds}ms, 时长: {duration:F2}s)");
-            SynthesisCompleted?.Invoke(rawText, duration, sw.ElapsedMilliseconds);
-
-            return new TtsSynthesisResult(true, wavBytes, duration, sw.ElapsedMilliseconds, sr, null);
         }
         catch (OperationCanceledException)
         {
-            SetState(TtsServerState.Ready, "合成已取消");
+            TrySetSynthesisState(operation, TtsServerState.Ready, "合成已取消");
             return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, 24000, "用户已取消");
         }
         catch (Exception ex)
         {
-            SetState(TtsServerState.Error, $"合成异常: {ex.Message}");
+            TrySetSynthesisState(operation, TtsServerState.Error, $"合成异常: {ex.Message}");
             return new TtsSynthesisResult(false, null, 0, sw.ElapsedMilliseconds, 24000, ex.Message);
         }
     }
@@ -875,6 +952,19 @@ public sealed class TtsService : IDisposable
     }
 
     /// <summary>
+    /// 释放 ResolveDevices 返回的 COM 设备。mic/mon 可能指向同一个 MMDevice，
+    /// 引用相同时只释放一次，避免重复 Dispose。
+    /// </summary>
+    private static void DisposeDevices(MMDevice? micDevice, MMDevice? monDevice)
+    {
+        try { micDevice?.Dispose(); } catch { }
+        if (!ReferenceEquals(micDevice, monDevice))
+        {
+            try { monDevice?.Dispose(); } catch { }
+        }
+    }
+
+    /// <summary>
     /// 请求 IndexTTS 服务进行真正低延迟流式语音合成（POST /tts/stream?format=pcm）
     /// 逐块产出 24kHz 16-bit 单声道 PCM 音频流，首包延迟 ~550ms，全程内存无磁盘 IO
     /// </summary>
@@ -889,10 +979,10 @@ public sealed class TtsService : IDisposable
         }
 
         var cfg = SettingsService.Instance.Config;
-        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm&first_chunk_frames=12&chunk_frames=16";
+        string streamUrl = $"{cfg.TtsServerEndpoint.TrimEnd('/')}/tts/stream?format=pcm&first_chunk_frames=16&chunk_frames=16";
 
-        var prevState = State;
-        SetState(TtsServerState.Synthesizing, $"正在流式合成语音: \"{rawText}\"...");
+        var operation = BeginSynthesis($"正在流式合成语音: \"{rawText}\"...", ct);
+        if (!IsCurrentSynthesis(operation)) yield break;
 
         var reqObj = new
         {
@@ -915,45 +1005,52 @@ public sealed class TtsService : IDisposable
         }
         catch (OperationCanceledException)
         {
-            SetState(TtsServerState.Ready, "流式合成已取消");
+            TrySetSynthesisState(operation, TtsServerState.Ready, "流式合成已取消");
             yield break;
         }
         catch (Exception ex)
         {
-            SetState(TtsServerState.Error, $"流式连接异常: {ex.Message}");
+            TrySetSynthesisState(operation, TtsServerState.Error, $"流式连接异常: {ex.Message}");
             LogOccurred?.Invoke($"[TTS Stream] 请求连接异常: {ex.Message}");
             yield break;
         }
 
+        bool finished = false;
         using (resp)
         {
+          try
+          {
             if (!resp.IsSuccessStatusCode)
             {
-                string errDetail = await resp.Content.ReadAsStringAsync(ct);
-                SetState(TtsServerState.Error, $"流式合成失败: HTTP {(int)resp.StatusCode}");
+                string errDetail = await ReadStreamBodyAsync(token => resp.Content.ReadAsStringAsync(token), operation, ct);
+                TrySetSynthesisState(operation, TtsServerState.Error, $"流式合成失败: HTTP {(int)resp.StatusCode}");
                 LogOccurred?.Invoke($"[TTS Stream] 合成失败 (HTTP {(int)resp.StatusCode}): {errDetail}");
                 yield break;
             }
 
-            using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var stream = await ReadStreamBodyAsync(token => resp.Content.ReadAsStreamAsync(token), operation, ct);
             byte[] readBuffer = new byte[32768]; // 32KB 读取缓冲，减少网络分包与读取碎片
             byte[]? leftover = null; // 保证按 2 字节（int16 sample）对齐
             long totalBytes = 0;
             int chunkCount = 0;
             bool firstChunk = true;
+            bool canceled = false;
 
             while (true)
             {
                 int bytesRead;
                 try
                 {
-                    bytesRead = await stream.ReadAsync(readBuffer.AsMemory(0, readBuffer.Length), ct);
+                    bytesRead = await ReadStreamBodyAsync(
+                        token => stream.ReadAsync(readBuffer.AsMemory(0, readBuffer.Length), token).AsTask(), operation, ct);
                 }
                 catch (OperationCanceledException)
                 {
+                    canceled = true;
                     break;
                 }
 
+                if (!IsCurrentSynthesis(operation)) yield break;
                 if (bytesRead <= 0) break;
 
                 chunkCount++;
@@ -994,10 +1091,30 @@ public sealed class TtsService : IDisposable
             }
 
             sw.Stop();
+
+            if (canceled || ct.IsCancellationRequested)
+            {
+                TrySetSynthesisState(operation, TtsServerState.Ready, "流式合成已取消");
+                yield break;
+            }
+
             double duration = (double)totalBytes / (24000 * 2);
-            SetState(TtsServerState.Ready, $"流式合成完成 (耗时: {sw.ElapsedMilliseconds}ms, 音频时长: {duration:F2}s, 块数: {chunkCount})");
+            if (!TrySetSynthesisState(operation, TtsServerState.Ready, $"流式合成完成 (耗时: {sw.ElapsedMilliseconds}ms, 音频时长: {duration:F2}s, 块数: {chunkCount})"))
+                yield break;
             LogOccurred?.Invoke($"[TTS Stream] 流式传输结束: 共 {chunkCount} 块, 总字节: {totalBytes} ({duration:F2}s), 耗时: {sw.ElapsedMilliseconds}ms");
             SynthesisCompleted?.Invoke(rawText, duration, sw.ElapsedMilliseconds);
+            finished = true;
+          }
+          finally
+          {
+            // 调用方提前放弃枚举（例如 PlayStreamAsync 被取消后不再 MoveNext）时，
+            // 枚举器的 finally 仍会执行；这里把状态从 Synthesizing 复位，
+            // 避免界面永久停在“正在合成语音”。
+            if (!finished)
+            {
+                TrySetSynthesisState(operation, TtsServerState.Ready, "流式合成已结束", TtsServerState.Synthesizing);
+            }
+          }
         }
     }
 
@@ -1019,34 +1136,25 @@ public sealed class TtsService : IDisposable
         string rawText = (text ?? "").Trim();
         if (string.IsNullOrWhiteSpace(rawText)) return false;
 
-        // 停止上一次未完成的推流
-        StopPlayback();
-
-        try
-        {
-            await _playbackQueueLock.WaitAsync(ct);
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
-
-        CancellationTokenSource playbackCts;
-        lock (_playbackLock)
-        {
-            _activePlaybackCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            playbackCts = _activePlaybackCts;
-        }
-
+        // 等待队列前就登记本请求，停止和后来的请求也能取消尚未开播的任务。
+        using var playbackCts = BeginPlayback(ct);
         var token = playbackCts.Token;
-        PlaybackActiveStateChanged?.Invoke(true);
-
+        bool acquired = false;
         try
         {
+            await _playbackQueueLock.WaitAsync(token);
+            acquired = true;
+            token.ThrowIfCancellationRequested();
+            PlaybackActiveStateChanged?.Invoke(true);
             return await Task.Run(async () =>
             {
                 using var enumerator = new MMDeviceEnumerator();
-                var (micDevice, monDevice, isSameDevice) = ResolveDevices(enumerator, virtualMicDeviceId, monitorDeviceId, enableMonitor);
+                MMDevice? micDevice = null;
+                MMDevice? monDevice = null;
+                var resolved = ResolveDevices(enumerator, virtualMicDeviceId, monitorDeviceId, enableMonitor);
+                micDevice = resolved.micDevice;
+                monDevice = resolved.monDevice;
+                bool isSameDevice = resolved.isSameDevice;
 
                 var inputFormat = new WaveFormat(24000, 16, 1);
                 SpeechQueueWaveProvider? bufferSame = null;
@@ -1068,10 +1176,7 @@ public sealed class TtsService : IDisposable
                             using var audioClient = micDevice.CreateAudioClient();
                             var mixFormat = audioClient.MixFormat;
                             ISampleProvider sampleProvider = bufferSame.ToSampleProvider();
-                            if (mixFormat.Channels == 2 && sampleProvider.WaveFormat.Channels == 1)
-                            {
-                                sampleProvider = new MonoToStereoSampleProvider(sampleProvider);
-                            }
+                            sampleProvider = MatchDeviceChannelCount(sampleProvider, mixFormat);
                             if (sampleProvider.WaveFormat.SampleRate != mixFormat.SampleRate)
                             {
                                 sampleProvider = new WdlResamplingSampleProvider(sampleProvider, mixFormat.SampleRate);
@@ -1089,10 +1194,7 @@ public sealed class TtsService : IDisposable
                             using var audioClient = micDevice.CreateAudioClient();
                             var mixFormat = audioClient.MixFormat;
                             ISampleProvider sampleProvider = bufferMic.ToSampleProvider();
-                            if (mixFormat.Channels == 2 && sampleProvider.WaveFormat.Channels == 1)
-                            {
-                                sampleProvider = new MonoToStereoSampleProvider(sampleProvider);
-                            }
+                            sampleProvider = MatchDeviceChannelCount(sampleProvider, mixFormat);
                             if (sampleProvider.WaveFormat.SampleRate != mixFormat.SampleRate)
                             {
                                 sampleProvider = new WdlResamplingSampleProvider(sampleProvider, mixFormat.SampleRate);
@@ -1108,10 +1210,7 @@ public sealed class TtsService : IDisposable
                             using var audioClient = monDevice.CreateAudioClient();
                             var mixFormat = audioClient.MixFormat;
                             ISampleProvider sampleProvider = bufferMon.ToSampleProvider();
-                            if (mixFormat.Channels == 2 && sampleProvider.WaveFormat.Channels == 1)
-                            {
-                                sampleProvider = new MonoToStereoSampleProvider(sampleProvider);
-                            }
+                            sampleProvider = MatchDeviceChannelCount(sampleProvider, mixFormat);
                             if (sampleProvider.WaveFormat.SampleRate != mixFormat.SampleRate)
                             {
                                 sampleProvider = new WdlResamplingSampleProvider(sampleProvider, mixFormat.SampleRate);
@@ -1122,15 +1221,24 @@ public sealed class TtsService : IDisposable
                         }
                     }
 
+                    // 没有任何可用输出端点时，音频块会被静默丢弃，但旧逻辑仍会
+                    // 根据 totalBufferedBytes 把 startedPlayback 置 true，向 UI 谎报“推流完成”。
+                    bool hasOutputEndpoint = playerSame != null || playerMic != null || playerMon != null;
+                    if (!hasOutputEndpoint)
+                    {
+                        LogOccurred?.Invoke("未找到可用输出设备，或推流/耳返音量均为 0，已取消本次推流。");
+                        return false;
+                    }
+
                     bool startedPlayback = false;
                     int chunkCount = 0;
                     long totalBufferedBytes = 0;
                     // 高响应防欠载预缓冲阈值：
-                    // 服务端已配置首块 12 帧 (24,576 字节，约 512ms 音频) + 贪心解码 (首块仅需 ~440ms 生成)。
-                    // 后续块为 16 帧 (约 683ms 音频)，在 GPU 上仅需 ~270ms 即可生成完毕。
-                    // 因此首块的 512ms 音频完全足够覆盖次块的 270ms 生成耗时（存在 +242ms 的充裕余量）。
-                    // 将预防水位设为 20,000 字节（约 0.42 秒音频）：首块一到达即可立刻唤醒声卡推流，
-                    // 实现从发送文本到首字出声仅 ~450ms 的极致低延迟，且后续推流全程丝滑不中断。
+                    // 服务端已配置首块 16 帧 (32,768 字节，约 683ms 音频) + 贪心解码。
+                    // 后续块为 16 帧 (约 683ms 音频)，在 GPU 上约需 ~520ms 生成完毕。
+                    // 首块的 683ms 音频能够充裕覆盖次块的 520ms 计算耗时（保留 +160ms 安全余量）。
+                    // 将预防水位设为 20,000 字节（约 0.42 秒音频）：首块一到达立即唤醒声卡推流，
+                    // 实现极速首字出声的同时彻底杜绝开头播完首包后的卡顿/断音。
                     const int PRE_BUFFER_BYTES = 20000;
 
                     await foreach (var chunk in SynthesizeStreamAsync(rawText, token))
@@ -1198,6 +1306,10 @@ public sealed class TtsService : IDisposable
                         await Task.Delay(150, token); // 硬件延迟余音淡出
                     }
 
+                    // 用户点了“停止播放”后，合成流会被取消，但已播放的块数可能 >0。
+                    // 不能把这种情况当成成功返回，否则 UI 会误报“推流完成”。
+                    if (token.IsCancellationRequested) return false;
+
                     return startedPlayback;
                 }
                 finally
@@ -1205,6 +1317,7 @@ public sealed class TtsService : IDisposable
                     try { playerSame?.Stop(); playerSame?.Dispose(); bufferSame?.ClearBuffer(); } catch { }
                     try { playerMic?.Stop(); playerMic?.Dispose(); bufferMic?.ClearBuffer(); } catch { }
                     try { playerMon?.Stop(); playerMon?.Dispose(); bufferMon?.ClearBuffer(); } catch { }
+                    DisposeDevices(micDevice, monDevice);
                 }
             }, token);
         }
@@ -1219,8 +1332,12 @@ public sealed class TtsService : IDisposable
         }
         finally
         {
-            PlaybackActiveStateChanged?.Invoke(false);
-            _playbackQueueLock.Release();
+            EndPlayback(playbackCts);
+            if (acquired)
+            {
+                try { PlaybackActiveStateChanged?.Invoke(false); }
+                finally { _playbackQueueLock.Release(); }
+            }
         }
     }
 
@@ -1265,24 +1382,22 @@ public sealed class TtsService : IDisposable
     {
         if (wavBytes == null || wavBytes.Length == 0) return;
 
-        // 停止上一次未完成的推流
-        StopPlayback();
-
-        CancellationTokenSource playbackCts;
-        lock (_playbackLock)
-        {
-            _activePlaybackCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            playbackCts = _activePlaybackCts;
-        }
-
+        using var playbackCts = BeginPlayback(ct);
         var token = playbackCts.Token;
 
+        try
+        {
         await Task.Run(async () =>
         {
+            MMDevice? micDevice = null;
+            MMDevice? monDevice = null;
             try
             {
                 using var enumerator = new MMDeviceEnumerator();
-                var (micDevice, monDevice, isSameDevice) = ResolveDevices(enumerator, virtualMicDeviceId, monitorDeviceId, enableMonitor);
+                var resolved = ResolveDevices(enumerator, virtualMicDeviceId, monitorDeviceId, enableMonitor);
+                micDevice = resolved.micDevice;
+                monDevice = resolved.monDevice;
+                bool isSameDevice = resolved.isSameDevice;
 
                 var tasks = new List<Task>();
 
@@ -1318,7 +1433,43 @@ public sealed class TtsService : IDisposable
             {
                 LogOccurred?.Invoke($"音频推流播放异常: {ex.Message}");
             }
+            finally
+            {
+                DisposeDevices(micDevice, monDevice);
+            }
         }, token);
+        }
+        catch (OperationCanceledException) { }
+        finally { EndPlayback(playbackCts); }
+    }
+
+    /// <summary>
+    /// 把单声道 TTS 音频对齐到目标设备的原生声道数。
+    /// 只处理 2 声道时，5.1/7.1 设备（HDMI、虚拟 7.1 耳机）会保留单声道格式，
+    /// 共享模式 WasapiOut 初始化失败，整段 TTS 静音；这里用 MultiplexingSampleProvider
+    /// 把单声道复制到前 L/R，其余声道静音。
+    /// </summary>
+    private static ISampleProvider MatchDeviceChannelCount(ISampleProvider source, WaveFormat mixFormat)
+    {
+        if (mixFormat.Channels <= 0 || source.WaveFormat.Channels == mixFormat.Channels)
+        {
+            return source;
+        }
+
+        if (source.WaveFormat.Channels == 1 && mixFormat.Channels == 2)
+        {
+            return new MonoToStereoSampleProvider(source);
+        }
+
+        if (source.WaveFormat.Channels == 1 && mixFormat.Channels > 2)
+        {
+            var multiplex = new MultiplexingSampleProvider(new[] { source }, mixFormat.Channels);
+            multiplex.ConnectInputToOutput(0, 0);
+            multiplex.ConnectInputToOutput(0, 1);
+            return multiplex;
+        }
+
+        return source;
     }
 
     private async Task PlayToSingleEndpointAsync(
@@ -1340,10 +1491,7 @@ public sealed class TtsService : IDisposable
             ISampleProvider sampleProvider = reader.ToSampleProvider();
 
             // 1. 声道对齐：若目标为双声道（立体声）而源音频为单声道，平滑复制到左右声道，防止驱动单声道升采样抖动
-            if (mixFormat.Channels == 2 && sampleProvider.WaveFormat.Channels == 1)
-            {
-                sampleProvider = new MonoToStereoSampleProvider(sampleProvider);
-            }
+            sampleProvider = MatchDeviceChannelCount(sampleProvider, mixFormat);
 
             // 2. 采样率平滑重采样：若目标采样率与 24000Hz 不一致（如 48000Hz 或 44100Hz）
             // 使用高质量多相带通重采样器（WdlResamplingSampleProvider），杜绝驱动粗暴线性插值产生的高频数码电音
@@ -1373,19 +1521,39 @@ public sealed class TtsService : IDisposable
         }
     }
 
+    private CancellationTokenSource BeginPlayback(CancellationToken ct)
+    {
+        lock (_playbackLock)
+        {
+            _activePlaybackCts?.Cancel();
+            var request = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (Volatile.Read(ref _disposeStarted) != 0) request.Cancel();
+            _activePlaybackCts = request;
+            return request;
+        }
+    }
+
+    private void EndPlayback(CancellationTokenSource request)
+    {
+        lock (_playbackLock)
+        {
+            if (ReferenceEquals(_activePlaybackCts, request)) _activePlaybackCts = null;
+        }
+        // CTS 由发起请求的 using 释放，不能在其仍等待/使用 Token 时由 Stop 释放。
+    }
+
     public void StopPlayback()
     {
         lock (_playbackLock)
         {
             _activePlaybackCts?.Cancel();
-            _activePlaybackCts?.Dispose();
             _activePlaybackCts = null;
         }
     }
 
     public void Dispose()
     {
-        StopPlayback();
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0) return;
         StopManagedServer();
         _httpClient.Dispose();
     }

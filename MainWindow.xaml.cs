@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using VrcChatboxDemo.Services;
 using VrcChatboxDemo.Views;
 
@@ -19,10 +21,19 @@ public sealed partial class MainWindow : Window
     private readonly IntPtr _hWnd;
     private readonly TrayIconService _trayIconService = new();
 
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
+
+    private const int SM_SHUTTINGDOWN = 0x2000;
+
     // 导航项映射表与拖动重排状态
     private readonly Dictionary<string, NavigationViewItem> _allNavItems = new();
     private NavigationViewItem? _pressedItem;
     private NavigationViewItem? _draggedItem;
+    private Microsoft.UI.Xaml.Input.Pointer? _navDragPointer;
     private Windows.Foundation.Point _pointerStartPos;
     private DispatcherTimer? _longPressTimer;
     private bool _isDragging = false;
@@ -33,6 +44,8 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
 
+        _hWnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
@@ -40,9 +53,20 @@ public sealed partial class MainWindow : Window
 
         var cfg = SettingsService.Instance.Config;
 
-        // 1. 恢复窗口尺寸
-        int width = cfg.WindowWidth >= 400 ? cfg.WindowWidth : NormalWidth;
-        int height = cfg.WindowHeight >= 300 ? cfg.WindowHeight : NormalHeight;
+        // 1. 恢复窗口尺寸。
+        // AppWindow.Resize 使用物理像素，而 NormalWidth/NormalHeight 与 XAML 的
+        // MinWidth 都是 DIP。首次运行（无位置/尺寸记录）时必须按当前 DPI 换算，
+        // 否则 150% 缩放下 820px 只有约 547 DIP，设置页内容区不足 700 DIP。
+        uint dpi = GetDpiForWindow(_hWnd);
+        double dpiScale = dpi > 0 ? dpi / 96.0 : 1.0;
+        bool hasSavedSize = cfg.WindowWidth != NormalWidth || cfg.WindowHeight != NormalHeight;
+
+        int width = hasSavedSize && cfg.WindowWidth >= 400
+            ? cfg.WindowWidth
+            : (int)Math.Round(NormalWidth * dpiScale);
+        int height = hasSavedSize && cfg.WindowHeight >= 300
+            ? cfg.WindowHeight
+            : (int)Math.Round(NormalHeight * dpiScale);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
 
         // 2. 恢复窗口屏幕位置 (校验是否存在于当前活动显示器内)
@@ -75,7 +99,6 @@ public sealed partial class MainWindow : Window
         // 4. 初始化左侧导航功能栏项映射与持久化顺序
         InitializeNavItems(cfg.NavOrder);
 
-        _hWnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         SettingsService.Instance.HotkeyService.Initialize(_hWnd);
         SettingsService.Instance.ApplyHotkey();
         SettingsService.Instance.HotkeyService.HotkeyPressed += OnHotkeyPressed;
@@ -87,6 +110,13 @@ public sealed partial class MainWindow : Window
             {
                 DispatcherQueue.TryEnqueue(() =>
                 {
+                    // 沉浸模式下主窗口是隐藏的；若只 Show 主窗口而不退出沉浸，
+                    // 会同时出现两个窗口，且唤出热键因 IsImmersiveMode 为 true 而失效。
+                    if (SettingsService.Instance.IsImmersiveMode)
+                    {
+                        SettingsService.Instance.SetImmersiveMode(false);
+                    }
+
                     AppWindow.Show();
                     SettingsService.Instance.HotkeyService.ActivateWindow(_hWnd);
                 });
@@ -110,6 +140,13 @@ public sealed partial class MainWindow : Window
         // 窗口关闭拦截：点击右上角关闭按钮时隐藏到托盘，后台持续运行并保存配置
         AppWindow.Closing += (sender, args) =>
         {
+            // Windows 关机/注销时不能取消关闭，否则会阻止系统关机。
+            if (GetSystemMetrics(SM_SHUTTINGDOWN) != 0 || Environment.HasShutdownStarted)
+            {
+                SettingsService.Instance.SaveConfigImmediately();
+                return;
+            }
+
             args.Cancel = true;
             SettingsService.Instance.SaveConfigImmediately();
             AppWindow.Hide();
@@ -175,10 +212,12 @@ public sealed partial class MainWindow : Window
 
         ApplyNavOrder(savedOrder);
 
-        // 默认激活第一项
+        ContentFrame.CacheSize = 7;
+
+        // 默认激活第一项，并导航到该导航项对应的页面（用户可自定义顺序，第一项不一定是聊天页）
         var firstItem = NavView.MenuItems.OfType<NavigationViewItem>().FirstOrDefault() ?? ChatNavItem;
         NavView.SelectedItem = firstItem;
-        ContentFrame.Navigate(typeof(ChatPage));
+        NavigateToTag(firstItem.Tag as string);
     }
 
     private void ApplyNavOrder(List<string>? order)
@@ -255,12 +294,17 @@ public sealed partial class MainWindow : Window
         int target = index + delta;
         if (target < 0 || target >= NavView.MenuItems.Count) return;
 
+        // 重排不应改变当前打开的页面：记录原选中项，插入后恢复。
+        // 若在 _isReorderingNav=true 期间把 SelectedItem 改成被移动项，
+        // SelectionChanged 会被抑制，导致“选中项变了但内容页没变”。
+        var previouslySelected = NavView.SelectedItem;
+
         _isReorderingNav = true;
         try
         {
             NavView.MenuItems.RemoveAt(index);
             NavView.MenuItems.Insert(target, item);
-            NavView.SelectedItem = item;
+            NavView.SelectedItem = previouslySelected ?? item;
         }
         finally
         {
@@ -272,8 +316,26 @@ public sealed partial class MainWindow : Window
 
     private void ResetNavOrder()
     {
-        var defaultOrder = new List<string> { "chat", "speech", "translation", "hotkey", "interaction", "network" };
+        var defaultOrder = new List<string> { "chat", "speech", "translation", "tts", "hotkey", "interaction", "network" };
+
+        // ApplyNavOrder 会清空 MenuItems，选中项随之丢失；先记住当前页面，重置后恢复选中与内容
+        string? selectedTag = (NavView.SelectedItem as NavigationViewItem)?.Tag as string;
+
         ApplyNavOrder(defaultOrder);
+
+        NavigationViewItem? itemToSelect = null;
+        if (!string.IsNullOrEmpty(selectedTag))
+        {
+            _allNavItems.TryGetValue(selectedTag, out itemToSelect);
+        }
+        itemToSelect ??= NavView.MenuItems.OfType<NavigationViewItem>().FirstOrDefault();
+
+        if (itemToSelect != null)
+        {
+            NavView.SelectedItem = itemToSelect;
+            NavigateToTag(itemToSelect.Tag as string);
+        }
+
         SaveCurrentNavOrder();
     }
 
@@ -284,6 +346,7 @@ public sealed partial class MainWindow : Window
         if (!props.IsLeftButtonPressed) return;
 
         _pressedItem = item;
+        _navDragPointer = e.Pointer;
         _pointerStartPos = e.GetCurrentPoint(NavView).Position;
 
         _longPressTimer?.Stop();
@@ -304,6 +367,13 @@ public sealed partial class MainWindow : Window
         _isDragging = true;
         _draggedItem = item;
         _draggedItem.Opacity = 0.55;
+
+        // WinUI 对鼠标没有隐式捕获；不 CapturePointer 的话，拖出窗口后松开左键
+        // 收不到 PointerReleased/CaptureLost，拖拽状态会永久卡住。
+        if (_navDragPointer != null)
+        {
+            try { item.CapturePointer(_navDragPointer); } catch { }
+        }
 
         // 更新悬浮幽灵图标
         if (_draggedItem.Icon is FontIcon fi)
@@ -334,6 +404,13 @@ public sealed partial class MainWindow : Window
                     _longPressTimer.Stop();
                 }
             }
+            return;
+        }
+
+        // 鼠标已在窗口外松开（没有捕获时的兜底）：结束拖拽，避免无按键状态下继续拖动。
+        if (!e.GetCurrentPoint(NavView).Properties.IsLeftButtonPressed)
+        {
+            EndNavDrag();
             return;
         }
 
@@ -406,6 +483,7 @@ public sealed partial class MainWindow : Window
         {
             _pressedItem = null;
             _draggedItem = null;
+            _navDragPointer = null;
         }
     }
 
@@ -431,12 +509,15 @@ public sealed partial class MainWindow : Window
 
             if (newIndex >= 0 && newIndex < NavView.MenuItems.Count && newIndex != oldIndex)
             {
+                // 拖拽排序只改变顺序，不切换当前页面；恢复原选中项，避免选中项与内容页脱节。
+                var previouslySelected = NavView.SelectedItem;
+
                 _isReorderingNav = true;
                 try
                 {
                     NavView.MenuItems.RemoveAt(oldIndex);
                     NavView.MenuItems.Insert(newIndex, _draggedItem);
-                    NavView.SelectedItem = _draggedItem;
+                    NavView.SelectedItem = previouslySelected ?? _draggedItem;
                 }
                 finally
                 {
@@ -447,8 +528,14 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        if (_navDragPointer != null)
+        {
+            try { _draggedItem.ReleasePointerCapture(_navDragPointer); } catch { }
+        }
+
         _pressedItem = null;
         _draggedItem = null;
+        _navDragPointer = null;
     }
 
     private void SaveCurrentNavOrder()
@@ -487,7 +574,7 @@ public sealed partial class MainWindow : Window
             if (ContentFrame.CurrentSourcePageType != typeof(ChatPage))
             {
                 NavView.SelectedItem = ChatNavItem;
-                ContentFrame.Navigate(typeof(ChatPage));
+                ContentFrame.Navigate(typeof(ChatPage), null, new SuppressNavigationTransitionInfo());
             }
 
             if (ContentFrame.Content is ChatPage chatPage)
@@ -526,12 +613,11 @@ public sealed partial class MainWindow : Window
     private async void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         SettingsService.Instance.SaveConfigImmediately();
-        SettingsService.Instance.TtsService.Dispose();
 
-        // 软件关闭时通知 Ollama 卸载显存中的模型
+        // 和托盘退出共用幂等模型清理；Ollama 不可达时也只等待有限的总预算。
         try
         {
-            await SettingsService.Instance.OllamaService.UnloadAllModelsAsync(SettingsService.Instance.OllamaEndpoint);
+            await SettingsService.Instance.CleanupModelServicesForExitAsync();
         }
         catch { }
 
@@ -550,24 +636,32 @@ public sealed partial class MainWindow : Window
 
         if (args.SelectedItem is NavigationViewItem item)
         {
-            string tag = item.Tag?.ToString() ?? string.Empty;
-            Type? targetPage = tag switch
-            {
-                "chat" => typeof(ChatPage),
-                "speech" => typeof(SpeechSettingsPage),
-                "translation" => typeof(TranslationSettingsPage),
-                "tts" => typeof(TtsSettingsPage),
-                "hotkey" => typeof(HotkeySettingsPage),
-                "interaction" => typeof(InteractionSettingsPage),
-                "network" => typeof(NetworkLogSettingsPage),
-                "settings" => typeof(SpeechSettingsPage),
-                _ => null
-            };
+            NavigateToTag(item.Tag as string);
+        }
+    }
 
-            if (targetPage != null && ContentFrame.CurrentSourcePageType != targetPage)
-            {
-                ContentFrame.Navigate(targetPage);
-            }
+    private static Type? GetPageTypeForTag(string? tag)
+    {
+        return tag switch
+        {
+            "chat" => typeof(ChatPage),
+            "speech" => typeof(SpeechSettingsPage),
+            "translation" => typeof(TranslationSettingsPage),
+            "tts" => typeof(TtsSettingsPage),
+            "hotkey" => typeof(HotkeySettingsPage),
+            "interaction" => typeof(InteractionSettingsPage),
+            "network" => typeof(NetworkLogSettingsPage),
+            "settings" => typeof(SpeechSettingsPage),
+            _ => null
+        };
+    }
+
+    private void NavigateToTag(string? tag)
+    {
+        Type? targetPage = GetPageTypeForTag(tag);
+        if (targetPage != null && ContentFrame.CurrentSourcePageType != targetPage)
+        {
+            ContentFrame.Navigate(targetPage, null, new SuppressNavigationTransitionInfo());
         }
     }
 }

@@ -26,8 +26,8 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="340" />
-                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="320" />
                     </Grid.ColumnDefinitions>
 
                     <ToggleSwitch x:Name="DirectSendSwitch" Header="直接上屏 "
@@ -52,7 +52,7 @@
 
                     <ToggleSwitch x:Name="LiveTypingSwitch" Grid.Row="2" Grid.Column="1" Header="逐字实时上屏"
                                   Toggled="LiveTypingSwitch_Toggled"
-                                  ToolTipService.ToolTip="输入时每打一个字立即发送到游戏头顶气泡，并持续保持打字中状态直到按 Enter 确认发送" />
+                                  ToolTipService.ToolTip="输入时逐字更新游戏头顶气泡，并显示打字状态" />
                 </Grid>
             </StackPanel>
         </Border>
@@ -69,7 +69,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Spacing="2">
                         <TextBlock Text="常驻模板" Style="{StaticResource SubtitleTextBlockStyle}" FontSize="16" />
-                        <TextBlock Text="在文本中通过 {变量名} 引用动态内容，使用 [文本] 标注的文本将具有有效期"
+                        <TextBlock Text="在文本中通过 {变量名} 引用动态内容；[文本] 为瞬态块，可在开头写 ##秒数 单独指定保留时长（如 [##5 临时消息]）。模板长度不限，实际发送时按 VRChat 144 字符截断。开启常驻后，发送消息会交给常驻模板统一渲染/维持，不再单独直发；模板未写 {sent_text}/{sent_translation} 时会自动追加瞬态块显示"
                                    Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                     </StackPanel>
                     <ToggleSwitch x:Name="PersistentTextSwitch" Grid.Column="1" VerticalAlignment="Center"
@@ -95,7 +95,7 @@
                         <TextBlock Text="标注保留时长:" Margin="12,0,0,0" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <ComboBox x:Name="TransientDurationComboBox" Width="130"
                                   SelectionChanged="TransientDurationComboBox_SelectionChanged"
-                                  ToolTipService.ToolTip="使用 [] 标注的内容 (如 [翻译: {translation}]) 仅在变量更新时临时显示指定秒数，过期后自动隐藏恢复纯常驻">
+                                  ToolTipService.ToolTip="使用 [] 标注的内容 (如 [翻译: {translation}]) 仅在变量更新时临时显示指定秒数，过期后自动隐藏恢复纯常驻。也可在 [] 内用开头的 ##秒数 单独覆盖本块时长，如 [##5 临时消息]">
                             <ComboBoxItem Content="3 秒" Tag="3" />
                             <ComboBoxItem Content="5 秒" Tag="5" />
                             <ComboBoxItem Content="8 秒" Tag="8" />
@@ -106,16 +106,18 @@
                             <ComboBoxItem Content="60 秒" Tag="60" />
                         </ComboBox>
                     </StackPanel>
-                    <TextBlock x:Name="PersistentCharCountTextBlock" Grid.Column="1" HorizontalAlignment="Right" Text="0 / 144 字符"
-                               FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="PersistentCharCountTextBlock" Grid.Column="1" HorizontalAlignment="Right" Text="0 字符"
+                               FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center"
+                               ToolTipService.ToolTip="模板本身不限长度；实际发送到 VRChat 时会按 144 字符上限截断" />
                 </Grid>
 
                 <TextBox x:Name="PersistentTextBox"
                          PlaceholderText="输入要在头顶常驻或发送的模板文本 (例: 挂机中 | 正在听: {music} | [翻译: {translation}])"
                          TextWrapping="Wrap"
                          AcceptsReturn="True"
-                         MaxLength="144"
                          MinHeight="72"
+                         MaxHeight="240"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
                          TextChanged="PersistentTextBox_TextChanged" />
 
                 <!-- 游戏内打字避让守卫设置与操作栏 -->

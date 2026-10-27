@@ -51,8 +51,10 @@ public partial class SettingsService
                 Config.ChineseVariant = SpeechService.ChineseVariant;
                 Config.SpeechSliceDurationSeconds = SpeechService.SliceDurationSeconds;
                 Config.GpuUsageMode = SpeechService.PerformanceMode.ToString();
-                Config.SpeechModelType = SpeechService.CurrentModelType;
-                Config.InboundEnabled = InboundService.IsRunning;
+                // 不要用 SpeechService.CurrentModelType 覆盖 Config.SpeechModelType：
+                // 前者是“已加载完成”的模型，后者是“用户选择的模型”。切换/下载尚未完成时
+                // （例如 tiny→base 正在下载权重）任何一次自动保存都会把磁盘上的选择改回旧模型，
+                // 下次启动就丢掉了用户的选择。选择值由 SpeechModelType setter 维护。
                 Config.InboundHttpPort = InboundService.HttpPort;
                 Config.InboundOscPort = InboundService.OscPort;
                 Config.InboundAutoSendToVrc = InboundService.AutoSendToVrc;

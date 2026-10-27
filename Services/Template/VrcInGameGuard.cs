@@ -50,11 +50,62 @@ public class VrcInGameGuard : IDisposable
     private IntPtr _hookId = IntPtr.Zero;
     private bool _isDisposed = false;
 
+    /// <summary>
+    /// 前台进程判定：VRChat 直接前台，或输入法组合窗口宿主在最近若干秒内接替了前台。
+    /// 单独抽出来是为了能脱离 Win32 做确定性回归（中文输入必须持续保持避让）。
+    /// </summary>
+    internal sealed class VrcForegroundTracker
+    {
+        private readonly double _imeAssociationSeconds;
+        private DateTime _lastVrcForegroundTime = DateTime.MinValue;
+
+        public VrcForegroundTracker(double imeAssociationSeconds = 3.0)
+        {
+            _imeAssociationSeconds = imeAssociationSeconds;
+        }
+
+        public DateTime LastVrcForegroundTime => _lastVrcForegroundTime;
+
+        public static bool IsVrcProcess(string processName) =>
+            !string.IsNullOrEmpty(processName) &&
+            processName.Contains("VRChat", StringComparison.OrdinalIgnoreCase);
+
+        public static bool IsImeHostProcess(string processName) =>
+            !string.IsNullOrEmpty(processName) &&
+            (processName.Contains("TextInputHost", StringComparison.OrdinalIgnoreCase) ||
+             processName.Contains("ctfmon", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// 记录一次前台观测并返回是否应视为“在 VRChat 里操作”。
+        /// 输入法组合窗口（TextInputHost/ctfmon）接管前台时，只要它紧接在 VRChat 之后，
+        /// 就滑动续期关联时间；否则连续打中文超过关联窗口后避让会提前失效，
+        /// 常驻文本会顶掉玩家正在输入的聊天框。
+        /// </summary>
+        public bool Observe(string processName, DateTime now)
+        {
+            if (IsVrcProcess(processName))
+            {
+                _lastVrcForegroundTime = now;
+                return true;
+            }
+
+            if (IsImeHostProcess(processName) &&
+                (now - _lastVrcForegroundTime).TotalSeconds < _imeAssociationSeconds)
+            {
+                _lastVrcForegroundTime = now;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    private readonly VrcForegroundTracker _foregroundTracker = new();
+
     // 缓存上一次检测到的前台 PID 与是否为 VRChat，降低频繁进程查询开销
     private uint _lastForegroundPid = 0;
     private bool _lastIsVrc = false;
     private DateTime _lastCheckTime = DateTime.MinValue;
-    private DateTime _lastVrcForegroundTime = DateTime.MinValue;
 
     /// <summary>
     /// 当玩家在 VRChat 游戏窗口内按回车发送消息时触发
@@ -142,25 +193,7 @@ public class VrcInGameGuard : IDisposable
         {
             using var proc = Process.GetProcessById((int)pid);
             string procName = proc.ProcessName;
-            bool isDirectVrc = procName.Contains("VRChat", StringComparison.OrdinalIgnoreCase);
-            if (isDirectVrc)
-            {
-                _lastVrcForegroundTime = now;
-                _lastIsVrc = true;
-                return true;
-            }
-
-            // 核心兼容：如果前台窗口是 Windows 输入法/候选框宿主 (如 TextInputHost, ctfmon 等)，
-            // 且最近 3 秒内前台是 VRChat，则仍视作在 VRChat 中使用输入法打字，绝不提前中断打字避让状态
-            if ((now - _lastVrcForegroundTime).TotalSeconds < 3.0 &&
-                (procName.Contains("TextInputHost", StringComparison.OrdinalIgnoreCase) ||
-                 procName.Contains("ctfmon", StringComparison.OrdinalIgnoreCase)))
-            {
-                _lastIsVrc = true;
-                return true;
-            }
-
-            _lastIsVrc = false;
+            _lastIsVrc = _foregroundTracker.Observe(procName, now);
         }
         catch
         {

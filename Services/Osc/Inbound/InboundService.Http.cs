@@ -11,7 +11,7 @@ namespace VrcChatboxDemo.Services;
 
 public partial class InboundService
 {
-    private void StartHttpServer(CancellationToken ct)
+    private bool StartHttpServer(CancellationToken ct)
     {
         try
         {
@@ -34,10 +34,15 @@ public partial class InboundService
                     catch { }
                 }
             }, ct);
+
+            return true;
         }
         catch (Exception ex)
         {
+            try { _httpListener?.Close(); } catch { }
+            _httpListener = null;
             StatusChanged?.Invoke($"HTTP 外部接口启动异常 ({HttpPort}): {ex.Message}");
+            return false;
         }
     }
 
@@ -128,23 +133,23 @@ public partial class InboundService
                                 using var doc = JsonDocument.Parse(body);
                                 if (doc.RootElement.TryGetProperty("name", out var nameProp))
                                 {
-                                    name = nameProp.GetString() ?? string.Empty;
+                                    name = GetJsonStringValue(nameProp);
                                 }
                                 if (doc.RootElement.TryGetProperty("value", out var valProp))
                                 {
-                                    value = valProp.GetString() ?? string.Empty;
+                                    value = GetJsonStringValue(valProp);
                                 }
                                 else if (doc.RootElement.TryGetProperty("text", out var textProp))
                                 {
-                                    value = textProp.GetString() ?? string.Empty;
+                                    value = GetJsonStringValue(textProp);
                                 }
                                 if (doc.RootElement.TryGetProperty("displayName", out var dispProp))
                                 {
-                                    disp = dispProp.GetString();
+                                    disp = GetJsonStringValue(dispProp);
                                 }
                                 if (doc.RootElement.TryGetProperty("description", out var descProp))
                                 {
-                                    desc = descProp.GetString();
+                                    desc = GetJsonStringValue(descProp);
                                 }
                             }
                             catch { }
@@ -226,11 +231,11 @@ public partial class InboundService
                         using var doc = JsonDocument.Parse(body);
                         if (doc.RootElement.TryGetProperty("text", out var textProp))
                         {
-                            receivedText = textProp.GetString() ?? string.Empty;
+                            receivedText = GetJsonStringValue(textProp);
                         }
                         else if (doc.RootElement.TryGetProperty("message", out var msgProp))
                         {
-                            receivedText = msgProp.GetString() ?? string.Empty;
+                            receivedText = GetJsonStringValue(msgProp);
                         }
                     }
                     catch
@@ -268,4 +273,12 @@ public partial class InboundService
             try { context.Response.Close(); } catch { }
         }
     }
+
+    private static string GetJsonStringValue(JsonElement prop) =>
+        prop.ValueKind switch
+        {
+            JsonValueKind.String => prop.GetString() ?? string.Empty,
+            JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+            _ => prop.GetRawText()
+        };
 }

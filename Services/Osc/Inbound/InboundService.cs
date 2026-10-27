@@ -34,16 +34,42 @@ public partial class InboundService : IDisposable
         HttpPort = httpPort;
         OscPort = oscPort;
         _cts = new CancellationTokenSource();
-        _isRunning = true;
 
-        StartHttpServer(_cts.Token);
-        StartOscUdpServer(_cts.Token);
+        // 两个监听器都可能因为端口被占用/URL 保留权限而启动失败。
+        // 只有至少一个真正监听成功时才把服务标记为运行中，否则 UI 会显示
+        // “已就绪”并把 InboundEnabled 持久化为 true，但实际没有任何端口在监听。
+        bool httpOk = StartHttpServer(_cts.Token);
+        bool udpOk = StartOscUdpServer(_cts.Token);
+        _isRunning = httpOk || udpOk;
 
-        StatusChanged?.Invoke($"外部接口监听已就绪 (HTTP: {HttpPort}, UDP OSC: {OscPort})");
+        if (!_isRunning)
+        {
+            try
+            {
+                _cts.Cancel();
+                _cts.Dispose();
+                _cts = null;
+            }
+            catch { }
+            StatusChanged?.Invoke($"外部接口启动失败 (HTTP: {HttpPort}, UDP OSC: {OscPort})");
+            return;
+        }
+
+        if (httpOk && udpOk)
+        {
+            StatusChanged?.Invoke($"外部接口监听已就绪 (HTTP: {HttpPort}, UDP OSC: {OscPort})");
+        }
+        else
+        {
+            StatusChanged?.Invoke(httpOk
+                ? $"外部接口部分就绪：HTTP {HttpPort} 已监听，UDP OSC {OscPort} 启动失败"
+                : $"外部接口部分就绪：UDP OSC {OscPort} 已监听，HTTP {HttpPort} 启动失败");
+        }
     }
 
     public void Stop()
     {
+        bool wasRunning = _isRunning;
         _isRunning = false;
         try
         {
@@ -69,7 +95,12 @@ public partial class InboundService : IDisposable
         }
         catch { }
 
-        StatusChanged?.Invoke("外部接口监听已关闭");
+        // Start() 内部会先 Stop() 做清理；若此时并没有在运行，不应再广播
+        // “已关闭”，否则刚启动就会在状态栏刷一条误导性的关闭提示。
+        if (wasRunning)
+        {
+            StatusChanged?.Invoke("外部接口监听已关闭");
+        }
     }
 
     public void Dispose()

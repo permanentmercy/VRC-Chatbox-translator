@@ -161,8 +161,8 @@
                 <!-- 虚拟麦克风输出设备选择 -->
                 <Grid ColumnSpacing="16" RowSpacing="8">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="420" />
-                        <ColumnDefinition Width="260" />
+                        <ColumnDefinition Width="400" />
+                        <ColumnDefinition Width="240" />
                     </Grid.ColumnDefinitions>
 
                     <ComboBox x:Name="VirtualMicComboBox" Header="VRChat 麦克风推流目标声卡 (推荐选择虚拟声卡，如 CABLE Input)"
@@ -196,8 +196,8 @@
 
                         <Grid ColumnSpacing="16" RowSpacing="8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="400" />
-                                <ColumnDefinition Width="240" />
+                                <ColumnDefinition Width="380" />
+                                <ColumnDefinition Width="220" />
                             </Grid.ColumnDefinitions>
 
                             <ComboBox x:Name="MonitorDeviceComboBox" Header="耳返监听设备 (选择您戴的物理耳机/扬声器)"
@@ -276,9 +276,13 @@
 
                 <Grid ColumnSpacing="20" RowSpacing="12">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="340" />
-                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="320" />
                     </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
 
                     <ToggleSwitch x:Name="AutoReadSentMessageSwitch" Header="打字发送时自动语音朗读"
                                   Toggled="AutoReadSentMessageSwitch_Toggled"
@@ -287,6 +291,10 @@
                     <ToggleSwitch x:Name="AutoReadTranslationSwitch" Grid.Column="1" Header="双语翻译完成时自动朗读译文"
                                   Toggled="AutoReadTranslationSwitch_Toggled"
                                   ToolTipService.ToolTip="语音识别出中文并翻译为目标语言（如英语）后，自动通过 TTS 将翻译结果朗读给外国玩家听" />
+
+                    <ToggleSwitch x:Name="AutoReadSentTranslationSwitch" Grid.Row="1" Header="朗读我发送消息的翻译"
+                                  Toggled="AutoReadSentTranslationSwitch_Toggled"
+                                  ToolTipService.ToolTip="发送消息后自动翻译并朗读译文（需在翻译配置页开启“发送消息时自动翻译”）。与“打字发送时自动语音朗读”同时开启时优先朗读译文，避免重复播报" />
                 </Grid>
             </StackPanel>
         </Border>

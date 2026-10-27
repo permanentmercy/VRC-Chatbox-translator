@@ -114,9 +114,16 @@ public partial class LiveCaptionsService
         var procs = Process.GetProcessesByName("LiveCaptions");
         foreach (var proc in procs)
         {
-            if (proc.MainWindowHandle != IntPtr.Zero && IsWindow(proc.MainWindowHandle))
+            try
             {
-                return proc.MainWindowHandle;
+                if (proc.MainWindowHandle != IntPtr.Zero && IsWindow(proc.MainWindowHandle))
+                {
+                    return proc.MainWindowHandle;
+                }
+            }
+            finally
+            {
+                proc.Dispose();
             }
         }
         return IntPtr.Zero;

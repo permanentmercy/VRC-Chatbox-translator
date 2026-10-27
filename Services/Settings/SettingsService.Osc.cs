@@ -30,6 +30,10 @@ public partial class SettingsService
             _liveTypingCts?.Dispose();
             _liveTypingCts = null;
 
+            // 常驻模板接管消息显示时，草稿预览也不再独立写 /chatbox/input，
+            // 否则模板气泡会被原始草稿覆盖（“原本的发送逻辑”仍然存在）。
+            bool templateManaged = PersistentTextService.IsManagingSentMessages(VariableService);
+
             if (string.IsNullOrWhiteSpace(rawText))
             {
                 StopTypingHeartbeat();
@@ -40,7 +44,10 @@ public partial class SettingsService
                 if (_hasActiveLiveText)
                 {
                     _hasActiveLiveText = false;
-                    _ = OscService.SendChatboxMessageAsync(string.Empty, direct: true, playSound: false, recordLog: false);
+                    if (!templateManaged)
+                    {
+                        _ = OscService.SendChatboxMessageAsync(string.Empty, direct: true, playSound: false, recordLog: false);
+                    }
                 }
                 PersistentTextService.NotifyUserTyping(false);
                 return;
@@ -75,10 +82,13 @@ public partial class SettingsService
                         if (_isSendingFinalMessage || token.IsCancellationRequested) return;
                     }
 
-                    // 立即更新游戏内头顶气泡（逐字上屏，静音，不刷屏日志）
-                    string textToSend = System.Text.RegularExpressions.Regex.Replace(rawText ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    await OscService.SendChatboxMessageAsync(textToSend, direct: true, playSound: false, recordLog: false);
-                    _lastOscSendTime = DateTime.UtcNow;
+                    // 常驻模板接管时不写草稿预览；否则立即更新游戏内头顶气泡（逐字上屏，静音）
+                    if (!templateManaged)
+                    {
+                        string textToSend = System.Text.RegularExpressions.Regex.Replace(rawText ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        await OscService.SendChatboxMessageAsync(textToSend, direct: true, playSound: false, recordLog: false);
+                        _lastOscSendTime = DateTime.UtcNow;
+                    }
 
                     lock (_typingLock)
                     {
@@ -153,6 +163,24 @@ public partial class SettingsService
     }
 
     /// <summary>
+    /// VRChat chatbox 单条上限 144 字符。直接 Substring 可能把代理对（emoji）
+    /// 从中间切开，产生半个字符导致气泡显示乱码；这里避免切断代理对。
+    /// </summary>
+    private const int MaxChatboxChars = 144;
+
+    private static string TruncateForChatbox(string text)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= MaxChatboxChars) return text;
+
+        int cut = MaxChatboxChars;
+        if (char.IsHighSurrogate(text[cut - 1]))
+        {
+            cut--;
+        }
+        return text.Substring(0, cut);
+    }
+
+    /// <summary>
     /// 用户确认发送消息或语音识别/翻译定稿直接发送，停止打字动画并播放提示音，带速率防抖与发送互斥保底
     /// </summary>
     public async Task<bool> FinalizeSendAsync(string text)
@@ -179,26 +207,67 @@ public partial class SettingsService
                 // 立即停止打字状态动画
                 await OscService.SendTypingAsync(false, recordLog: false);
 
-                // 严格保证两次 /chatbox/input 间隔不低于 110ms，杜绝 VRChat 内部限流丢包
-                int elapsed = (int)(DateTime.UtcNow - _lastOscSendTime).TotalMilliseconds;
-                if (elapsed < 110)
+                // 严格保证两次 /chatbox/input 间隔不低于 110ms，杜绝 VRChat 内部限流丢包。
+                // 用 double 计算：_lastOscSendTime 的初值是 DateTime.MinValue，
+                // 直接转 int 会溢出成 int.MinValue，110 - elapsed 再溢出为负数，
+                // Task.Delay(负数) 会抛 ArgumentOutOfRangeException，表现为回车发送毫无反应。
+                double elapsed = (DateTime.UtcNow - _lastOscSendTime).TotalMilliseconds;
+                if (_lastOscSendTime != DateTime.MinValue && elapsed < 110)
                 {
-                    await Task.Delay(110 - elapsed);
+                    await Task.Delay(Math.Max(0, (int)(110 - elapsed)));
                 }
 
                 // 发送最终确认消息（包含声音配置并计入日志，确保任何显式换行标记解析为真实换行）
                 string finalMsg = System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                bool result = await OscService.SendChatboxMessageAsync(finalMsg, IsDirectSendEnabled, IsSoundEnabled, recordLog: true);
-                _lastOscSendTime = DateTime.UtcNow;
-                PersistentTextService.NotifyUserSentMessage();
 
-                // 若开启了打字发送时自动 TTS 语音朗读，清洗文本并触发推流
-                if (result && IsTtsEnabled && IsTtsAutoReadSentMessage && !string.IsNullOrWhiteSpace(finalMsg))
+                // VRChat chatbox 单条上限 144 字符；输入框只把超限标红但不阻止发送，
+                // 这里统一截断（不切断 emoji 代理对），避免超长文本被静默丢弃或显示乱码。
+                finalMsg = TruncateForChatbox(finalMsg);
+
+                // 常驻模板接管发送消息时，不再独立直发：
+                // 只更新 {sent_text}，由模板统一渲染、限流并维持气泡。
+                // 这样“手动发送 / 语音翻译 / 外部接入”最终都走同一个出口。
+                bool routedToTemplate = PersistentTextService.IsManagingSentMessages(VariableService);
+                bool result;
+                if (routedToTemplate)
                 {
-                    string cleanTts = PrepareTextForTts(finalMsg);
-                    if (!string.IsNullOrWhiteSpace(cleanTts))
+                    VariableService.SetVariable("sent_text", finalMsg, "我发送的消息原文",
+                        "本程序最近一次发送到 VRChat 的聊天文本（原文）");
+
+                    // 由常驻模板统一推送：模板显式引用 {sent_text} 时按用户位置显示，
+                    // 未引用时自动追加一个瞬态块，避免“发送了但看不到”。
+                    await PersistentTextService.NotifySentMessageAsync(finalMsg, VariableService, OscService);
+                    AddLog("Chat", $"消息已交给常驻模板显示: \"{finalMsg}\"", true);
+                    result = true;
+                }
+                else
+                {
+                    result = await OscService.SendChatboxMessageAsync(finalMsg, IsDirectSendEnabled, IsSoundEnabled, recordLog: true);
+                    _lastOscSendTime = DateTime.UtcNow;
+                    PersistentTextService.NotifyUserSentMessage();
+                    VariableService.SetVariable("sent_text", finalMsg, "我发送的消息原文",
+                        "本程序最近一次发送到 VRChat 的聊天文本（原文）");
+                }
+
+                if (result && !string.IsNullOrWhiteSpace(finalMsg))
+                {
+                    // 原文朗读与“朗读译文”互斥：同时开启时优先朗读译文，
+                    // 否则同一句话会被播报两遍。
+                    bool willReadTranslation = IsTtsEnabled && IsTtsAutoReadSentTranslation
+                                               && IsSentMessageTranslationEnabled;
+                    if (IsTtsEnabled && IsTtsAutoReadSentMessage && !willReadTranslation)
                     {
-                        _ = SpeakTextAsync(cleanTts);
+                        string cleanTts = PrepareTextForTts(finalMsg);
+                        if (!string.IsNullOrWhiteSpace(cleanTts))
+                        {
+                            _ = SpeakTextAsync(cleanTts);
+                        }
+                    }
+
+                    // 自动翻译发送内容（结果写入 {sent_translation}，可选朗读）
+                    if (IsSentMessageTranslationEnabled)
+                    {
+                        _ = TranslateSentMessageAsync(finalMsg);
                     }
                 }
 
@@ -225,6 +294,7 @@ public partial class SettingsService
     {
         PersistentTextService.NotifyUserSentMessage();
         string finalMsg = System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        finalMsg = TruncateForChatbox(finalMsg);
         return await OscService.SendChatboxMessageAsync(finalMsg, IsDirectSendEnabled, IsSoundEnabled);
     }
 

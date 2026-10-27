@@ -50,6 +50,7 @@ VRC Chatbox Translator 是一款面向 VRChat 玩家的桌面辅助工具，主�
 
 - 连接本机运行的 **Ollama** 服务进行翻译，可自定义模型名称、接口地址、目标语言与翻译提示词（支持 `{targetLanguage}`、`{text}` 占位符）。
 - 提供"识别/翻译直接发送"选项：说话或翻译结束时直接推送到头顶气泡，**不会篡改或覆盖当前输入框里的未发送草稿**，且不触发打字动画。
+- **发送消息自动翻译（可选）**：把您发出去的聊天内容翻译成目标语言，结果写入变量 `{sent_translation}`（原文写入 `{sent_text}`），可在常驻模板中按需引用；也可交给 TTS 自动朗读。
 - 可选显示翻译请求延迟（毫秒）。
 
 ### 3. 游戏内聊天与打字交互（OSC）
@@ -57,7 +58,9 @@ VRC Chatbox Translator 是一款面向 VRChat 玩家的桌面辅助工具，主�
 - **实时打字预览**：开启逐字上屏后，输入时实时同步到头顶气泡，回车确认发送并播放提示音。
 - **OSC 限流保底**：严格遵守 VRChat 单包间隔 ≥ 110ms 的限流要求，使用发送互斥锁 + 防抖，避免丢包。
 - **头顶常驻文本**：可在头顶循环保持一段自定义文字（例如个人状态、挂机提示）。主动说话或发送新消息时优先展示新内容，气泡淡出后自动恢复常驻文本。
-- 支持 `{变量名}` 动态变量（如 `{speech}`、`{translation}`、`{language}`）与 `[文本]` 格式的"瞬态文本"（带有效时长，过期自动恢复纯常驻）。
+- 支持 `{变量名}` 动态变量（如 `{speech}`、`{translation}`、`{sent_text}`、`{sent_translation}`、`{language}`）与 `[文本]` 格式的"瞬态文本"（带有效时长，过期自动恢复纯常驻）。每个 `[]` 内可在开头写 `##秒数` 单独指定该块的保留时长，例如 `[##5 临时消息]`、`[##8: {translation}]`；未写 `##` 的块沿用全局"标注保留时长"设置。
+- **发送消息统一由常驻模板维护**：开启常驻后，手动发送的消息不再单独直发 `/chatbox/input`，而是由常驻模板统一渲染、限流并维持气泡；模板显式引用 `{sent_text}` / `{sent_translation}` 时按模板位置显示，未引用时自动追加瞬态块显示原文/译文。
+- **模板输入不限 144 字符**：常驻模板本身可以写很长（多段/多变量），只有真正发送到 VRChat 时才按 144 字符上限截断；渲染后较短时不会占用额外长度。
 
 ### 4. 透明沉浸悬浮窗
 
@@ -70,7 +73,7 @@ VRC Chatbox Translator 是一款面向 VRChat 玩家的桌面辅助工具，主�
 - **流式推流**：首块音频到达即唤醒声卡推流，后续音频边生成边播放，首包延迟更低。
 - **虚拟麦克风推流**：把合成语音推送到 VB-Cable 之类的虚拟声卡，让游戏内队友也能听到你的"语音版消息"。
 - 内置智能语义断句（句子级切分、超长句细分、过短片段粘合、VRChat 富文本标签过滤、句末标点补齐）。
-- 可选"自动朗读已发送消息"或"自动朗读翻译结果"。
+- 可选"自动朗读已发送消息"、"自动朗读翻译结果"，以及"**朗读我发送消息的翻译**"（发送后先翻译再朗读译文；与"自动朗读已发送消息"同时开启时优先朗读译文，不会重复播报）。
 
 ### 6. 外部调用接口
 
@@ -224,7 +227,9 @@ GET http://127.0.0.1:9002/api/chatbox/resume              # 立即恢复常驻�
 | `AutoStartTtsServer` / `TtsPythonExePath` / `TtsServerScriptPath` / `TtsModelName` | — | TTS 服务自动启动与脚本路径。 |
 | `TtsVirtualMicDeviceId` / `TtsMonitorDeviceId` | — | 虚拟麦克风（推流）与监听设备 ID。 |
 | `TtsOutputVolume` / `TtsMonitorVolume` | `1` / `0.8` | 推流 / 监听音量。 |
-| `IsTtsAutoReadSentMessage` / `IsTtsAutoReadTranslation` | `true` / `false` | 自动朗读已发送 / 翻译。 |
+| `IsTtsAutoReadSentMessage` / `IsTtsAutoReadTranslation` | `false` / `false` | 自动朗读已发送原文 / 识别译文。 |
+| `IsTtsAutoReadSentTranslation` | `false` | 自动朗读「我发送消息的翻译」（需同时开启 `IsSentMessageTranslationEnabled`）。 |
+| `IsSentMessageTranslationEnabled` | `true` | 发送消息时自动翻译，结果写入 `{sent_translation}`。 |
 
 > 提示：修改 `config.json` 后重启软件生效；也可在 UI 内调整，软件会自动回写该文件。
 

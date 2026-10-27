@@ -37,6 +37,7 @@ public partial class SpeechService : IDisposable
     private readonly SemaphoreSlim _transcribeLock = new(1, 1);
     private readonly SemaphoreSlim _modelSwitchLock = new(1, 1);
     private CancellationTokenSource? _listeningCts;
+    private CancellationTokenSource? _startCts;
 
     private IWaveIn? _capture;
     private BufferedWaveProvider? _bufferedWaveProvider;
@@ -86,7 +87,19 @@ public partial class SpeechService : IDisposable
             }
 
             StatusChanged?.Invoke("正在启动 Whisper 模型...");
+
+            // 启动流程可能包含上百 MB 模型下载/加载，期间用户可能关闭语音。
+            // 用独立 CTS 让 StopAsync 能取消“启动中”的流程，避免关掉后引擎又自己启动。
+            _startCts?.Dispose();
+            _startCts = new CancellationTokenSource();
+            var startToken = _startCts.Token;
+
             await EnsureProcessorAsync(languageTag);
+            if (startToken.IsCancellationRequested)
+            {
+                DisposeStartCts();
+                return false;
+            }
 
             _currentEndpointId = audioEndpointId ?? string.Empty;
             _listeningCts = new CancellationTokenSource();
@@ -168,9 +181,17 @@ public partial class SpeechService : IDisposable
             var mono = resampler.ToMono();
             _wave16 = new SampleToWaveProvider16(mono);
 
+            // 捕获本地引用：StopInternalAsync 会把字段置 null，事件回调若直接读字段，
+            // 在“停止录音”与“最后一个音频回调”重叠时会抛 NullReferenceException。
+            var bufferedProvider = _bufferedWaveProvider;
             _capture.DataAvailable += (s, e) =>
             {
-                _bufferedWaveProvider.AddSamples(e.Buffer, 0, e.BytesRecorded);
+                try
+                {
+                    bufferedProvider?.AddSamples(e.Buffer, 0, e.BytesRecorded);
+                }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
             };
 
             _capture.RecordingStopped += (s, e) =>
@@ -182,7 +203,22 @@ public partial class SpeechService : IDisposable
                 }
             };
 
+            if (startToken.IsCancellationRequested)
+            {
+                await StopInternalAsync();
+                DisposeStartCts();
+                return false;
+            }
+
             _capture.StartRecording();
+
+            if (startToken.IsCancellationRequested)
+            {
+                await StopInternalAsync();
+                DisposeStartCts();
+                return false;
+            }
+
             _isListening = true;
             ListeningStateChanged?.Invoke(true);
 
@@ -195,6 +231,7 @@ public partial class SpeechService : IDisposable
             _ = Task.Run(() => ProcessLiveAudioLoopAsync(_listeningCts.Token));
 
             StatusChanged?.Invoke($"Whisper AI 实时字幕监听中 ({deviceName} [{deviceTypeDesc}] - {CurrentLanguageName})...");
+            DisposeStartCts();
             return true;
         }
         catch (Exception ex)
@@ -202,6 +239,7 @@ public partial class SpeechService : IDisposable
             _isListening = false;
             ListeningStateChanged?.Invoke(false);
             ErrorOccurred?.Invoke($"启动语音识别失败: {ex.Message}");
+            DisposeStartCts();
             await StopInternalAsync();
             return false;
         }
@@ -213,6 +251,11 @@ public partial class SpeechService : IDisposable
 
     public async Task StopAsync()
     {
+        // 先取消可能正在进行的启动流程（模型下载/加载），再等待会话锁。
+        // 否则 StartAsync 持有 _sessionLock 时 StopAsync 只能超时，启动流程结束后
+        // 仍会把 _isListening 置 true，导致用户关闭后开关自己弹回开启。
+        try { _startCts?.Cancel(); } catch { }
+
         try
         {
             if (await _sessionLock.WaitAsync(1000))
@@ -235,6 +278,12 @@ public partial class SpeechService : IDisposable
         {
             await StopInternalAsync();
         }
+    }
+
+    private void DisposeStartCts()
+    {
+        try { _startCts?.Dispose(); } catch { }
+        _startCts = null;
     }
 
     private Task StopInternalAsync()
@@ -297,16 +346,33 @@ public partial class SpeechService : IDisposable
     public void Dispose()
     {
         try { _isListening = false; } catch { }
+        try { _startCts?.Cancel(); _startCts?.Dispose(); } catch { }
         try { _listeningCts?.Cancel(); } catch { }
         try { _listeningCts?.Dispose(); } catch { }
         try { _capture?.StopRecording(); } catch { }
         try { _capture?.Dispose(); } catch { }
         try { _speechChannel?.Writer.TryComplete(); } catch { }
-        try { _processor?.Dispose(); } catch { }
-        try { _factory?.Dispose(); } catch { }
-        try { _sessionLock.Dispose(); } catch { }
-        try { _transcribeLock.Dispose(); } catch { }
-        try { _modelSwitchLock.Dispose(); } catch { }
+
+        // 等待正在进行的转写结束再释放原生 processor/factory；
+        // 若 500ms 内拿不到锁（应用退出、底层推理卡住），宁可交给进程退出，
+        // 也不要在推理线程仍在使用原生句柄时 Dispose 它们。
+        bool gotTranscribeLock = false;
+        try { gotTranscribeLock = _transcribeLock.Wait(500); } catch { }
+        if (gotTranscribeLock)
+        {
+            try
+            {
+                try { _processor?.Dispose(); } catch { }
+                try { _factory?.Dispose(); } catch { }
+            }
+            finally
+            {
+                try { _transcribeLock.Release(); } catch { }
+            }
+        }
+
+        // 不再 Dispose 三个 SemaphoreSlim：退出阶段后台任务仍可能在 finally 里
+        // Release，提前 Dispose 只会把一次干净退出变成 ObjectDisposedException。
         GC.SuppressFinalize(this);
     }
 }

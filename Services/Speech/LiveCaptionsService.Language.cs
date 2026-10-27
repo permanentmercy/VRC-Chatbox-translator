@@ -77,7 +77,7 @@ public partial class LiveCaptionsService
 
         // 仅当实时字幕当前已启用且处于监听状态时，才热重载字幕进程以生效新语言设置；
         // 若用户已关闭字幕语音识别，绝不擅自唤起或重启 LiveCaptions，防止因模型残留而在切换语言时意外重新自动打开监听
-        if (_isRunning && SettingsService.Instance.IsSpeechRecognitionEnabled)
+        if ((_isRunning || _isRestarting) && SettingsService.Instance.IsSpeechRecognitionEnabled)
         {
             bool ok = await RestartAsync(SettingsService.Instance.LiveCaptionsHideNativeWindow);
             if (ok)

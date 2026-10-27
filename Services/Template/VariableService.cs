@@ -27,7 +27,20 @@ public class VariableService
     /// <summary>
     /// 匹配 {变量名} 的正则表达式
     /// </summary>
-    private static readonly Regex VariableRegex = new(@"\{([a-zA-Z0-9_\u4e00-\u9fa5]+)\}", RegexOptions.Compiled);
+    private static readonly Regex VariableRegex = new(@"\{([a-zA-Z0-9_\-\u4e00-\u9fa5]+)\}", RegexOptions.Compiled);
+
+    // Rendering, reference detection and transient lifetimes must resolve aliases identically.
+    internal static string GetCanonicalVariableName(string name)
+    {
+        name = name.Trim().Trim('{', '}').Trim();
+        return name.ToLowerInvariant() switch
+        {
+            "lang" or "caption_lang" or "subtitle_lang" or "字幕语言" => "language",
+            "lang_code" or "caption_lang_code" or "字幕语言代码" => "language_code",
+            @"\n" or "newline" or "换行" => @"\n",
+            _ => name
+        };
+    }
 
     /// <summary>
     /// 当某个变量的值发生变更时触发 (变量名, 新值)
@@ -48,6 +61,8 @@ public class VariableService
     {
         RegisterBuiltin("speech", "语音识别文本", "从麦克风或系统扬声器读取的最新语音识别文本");
         RegisterBuiltin("translation", "AI 翻译结果", "本地 Ollama AI 翻译返回的最新目标语言文本");
+        RegisterBuiltin("sent_text", "我发送的消息原文", "本程序最近一次发送到 VRChat 的聊天文本（原文）");
+        RegisterBuiltin("sent_translation", "我发送消息的翻译", "本程序最近一次发送的聊天文本翻译成目标语言后的结果（需开启“发送消息时自动翻译”）");
         RegisterBuiltin("language", "当前字幕语言", "当前语音识别/字幕引擎生效的语言名称 (如 中文, 日本語, English)");
         RegisterBuiltin("language_code", "当前字幕语言代码", "当前字幕引擎生效的语言代码 (如 zh-CN, ja-JP, en-US)");
         RegisterBuiltin("time", "当前时间", "当前系统时钟 (HH:mm)");
@@ -133,19 +148,7 @@ public class VariableService
             return "\n";
         }
 
-        if (string.Equals(name, "lang", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "caption_lang", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "subtitle_lang", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "字幕语言", StringComparison.OrdinalIgnoreCase))
-        {
-            name = "language";
-        }
-        else if (string.Equals(name, "lang_code", StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(name, "caption_lang_code", StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(name, "字幕语言代码", StringComparison.OrdinalIgnoreCase))
-        {
-            name = "language_code";
-        }
+        name = GetCanonicalVariableName(name);
 
         if (_variables.TryGetValue(name, out var item))
         {
@@ -160,33 +163,16 @@ public class VariableService
     public bool UsesVariable(string template, string name)
     {
         if (string.IsNullOrEmpty(template) || string.IsNullOrEmpty(name)) return false;
-        name = name.Trim().Trim('{', '}').Trim();
-        if (template.IndexOf($"{{{name}}}", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        name = GetCanonicalVariableName(name);
+        // The explicit backslash-newline token is outside VariableRegex's name alphabet.
+        if (string.Equals(name, @"\n", StringComparison.OrdinalIgnoreCase) &&
+            template.IndexOf(@"{\n}", StringComparison.OrdinalIgnoreCase) >= 0) return true;
 
-        if (string.Equals(name, @"\n", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "newline", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "换行", StringComparison.OrdinalIgnoreCase))
+        foreach (Match match in VariableRegex.Matches(template))
         {
-            return template.IndexOf(@"{\n}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   template.IndexOf("{newline}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   template.IndexOf("{换行}", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (string.Equals(GetCanonicalVariableName(match.Groups[1].Value), name, StringComparison.OrdinalIgnoreCase))
+                return true;
         }
-
-        if (string.Equals(name, "language", StringComparison.OrdinalIgnoreCase))
-        {
-            return template.IndexOf("{lang}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   template.IndexOf("{caption_lang}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   template.IndexOf("{subtitle_lang}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   template.IndexOf("{字幕语言}", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        if (string.Equals(name, "language_code", StringComparison.OrdinalIgnoreCase))
-        {
-            return template.IndexOf("{lang_code}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   template.IndexOf("{caption_lang_code}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   template.IndexOf("{字幕语言代码}", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
         return false;
     }
 
@@ -225,20 +211,7 @@ public class VariableService
                 return DateTime.Now.ToString("HH:mm");
             }
 
-            string lookupName = varName;
-            if (string.Equals(varName, "lang", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(varName, "caption_lang", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(varName, "subtitle_lang", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(varName, "字幕语言", StringComparison.OrdinalIgnoreCase))
-            {
-                lookupName = "language";
-            }
-            else if (string.Equals(varName, "lang_code", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(varName, "caption_lang_code", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(varName, "字幕语言代码", StringComparison.OrdinalIgnoreCase))
-            {
-                lookupName = "language_code";
-            }
+            string lookupName = GetCanonicalVariableName(varName);
 
             if (_variables.TryGetValue(lookupName, out var item))
             {
@@ -259,10 +232,18 @@ public class VariableService
         rendered = Regex.Replace(rendered, @"[ \t]*\n[ \t]*", "\n");
         rendered = Regex.Replace(rendered, @"[ ]{2,}", " ");
 
-        // 7. VRChat 单条气泡最多 144 个字符限制
-        if (rendered.Length > 144)
+        // 7. VRChat 单条气泡最多 144 个字符限制。
+        // 直接 Substring 可能把 emoji 的代理对切成半个字符，渲染出乱码，
+        // 这里在需要时回退一个字符保证不切断代理对。
+        const int maxChatboxChars = 144;
+        if (rendered.Length > maxChatboxChars)
         {
-            rendered = rendered.Substring(0, 144);
+            int cut = maxChatboxChars;
+            if (char.IsHighSurrogate(rendered[cut - 1]))
+            {
+                cut--;
+            }
+            rendered = rendered.Substring(0, cut);
         }
 
         return rendered.Trim();

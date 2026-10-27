@@ -15,6 +15,7 @@ public sealed partial class SpeechSection : UserControl
     private List<AudioDeviceInfo> _audioDevices = new();
     private DispatcherTimer? _processPollTimer;
     private bool _lastConfiguredProcessRunning = false;
+    private bool _isRefreshingAudioDevices = false;
 
     public SpeechSection()
     {
@@ -39,28 +40,46 @@ public sealed partial class SpeechSection : UserControl
         _isInitializing = true;
         var s = SettingsService.Instance;
 
-        SpeechSwitch.IsOn = s.IsSpeechRecognitionEnabled;
-        SpeechStatusTextBlock.Text = s.SpeechStatus;
-        s.SpeechStatusUpdated += OnSpeechStatusUpdated;
-        s.SpeechRecognitionStateChanged += OnSpeechRecognitionStateChanged;
-        s.TargetAudioProcessChanged += OnTargetAudioProcessChanged;
-        s.LiveCaptionsAutoDetectChanged += OnLiveCaptionsAutoDetectChanged;
-        s.LiveCaptionsAutoSwitcher.StatusUpdated += OnAutoDetectStatusUpdated;
-        ProcessLoopbackCapture.ProcessStateChanged += OnProcessStateChanged;
+        try
+        {
+            SpeechSwitch.IsOn = s.IsSpeechRecognitionEnabled;
+            SpeechStatusTextBlock.Text = s.SpeechStatus;
 
-        InitSpeechEngine(s.SpeechEngine);
-        InitLiveCaptionsLanguages(s.LiveCaptionsLanguageCode);
-        InitSpeechModel(s.SpeechModelType);
-        InitSpeechLanguages();
-        InitChineseVariant(s.ChineseVariant);
-        InitGpuMode(s.GpuUsageMode);
-        InitSpeechSliceDuration(s.SpeechSliceDurationSeconds);
-        InitTargetProcesses(s.TargetAudioProcessName);
-        await InitAudioDevicesAsync();
-        InitSubtitleQueueCapacity(s.SubtitleQueueCapacity);
-        StartProcessPollTimer();
+            // 先退订再订阅：设置页启用 NavigationCacheMode，Loaded 可能重复触发；
+            // 直接 += 会让同一事件被处理多次（状态刷新、设备重建重复执行）。
+            s.SpeechStatusUpdated -= OnSpeechStatusUpdated;
+            s.SpeechRecognitionStateChanged -= OnSpeechRecognitionStateChanged;
+            s.TargetAudioProcessChanged -= OnTargetAudioProcessChanged;
+            s.LiveCaptionsAutoDetectChanged -= OnLiveCaptionsAutoDetectChanged;
+            s.LiveCaptionsAutoSwitcher.StatusUpdated -= OnAutoDetectStatusUpdated;
+            ProcessLoopbackCapture.ProcessStateChanged -= OnProcessStateChanged;
 
-        _isInitializing = false;
+            s.SpeechStatusUpdated += OnSpeechStatusUpdated;
+            s.SpeechRecognitionStateChanged += OnSpeechRecognitionStateChanged;
+            s.TargetAudioProcessChanged += OnTargetAudioProcessChanged;
+            s.LiveCaptionsAutoDetectChanged += OnLiveCaptionsAutoDetectChanged;
+            s.LiveCaptionsAutoSwitcher.StatusUpdated += OnAutoDetectStatusUpdated;
+            ProcessLoopbackCapture.ProcessStateChanged += OnProcessStateChanged;
+
+            InitSpeechEngine(s.SpeechEngine);
+            InitLiveCaptionsLanguages(s.LiveCaptionsLanguageCode);
+            InitSpeechModel(s.SpeechModelType);
+            InitSpeechLanguages();
+            InitChineseVariant(s.ChineseVariant);
+            InitGpuMode(s.GpuUsageMode);
+            InitSpeechSliceDuration(s.SpeechSliceDurationSeconds);
+            InitTargetProcesses(s.TargetAudioProcessName);
+            await InitAudioDevicesAsync();
+            InitSubtitleQueueCapacity(s.SubtitleQueueCapacity);
+            StartProcessPollTimer();
+        }
+        finally
+        {
+            // 必须放在 finally：设备枚举等步骤抛异常时，若 _isInitializing 停在 true，
+            // 之后所有控件的 SelectionChanged/Toggled 都会被当成初始化而忽略，
+            // 整个语音设置页会变得无法操作。
+            _isInitializing = false;
+        }
     }
 
     private void OnSpeechStatusUpdated(string status)
@@ -115,7 +134,9 @@ public sealed partial class SpeechSection : UserControl
 
     private void InitSpeechEngine(string? engine)
     {
-        string target = string.IsNullOrWhiteSpace(engine) ? "Whisper" : engine;
+        // 与 SettingsService.SpeechEngine 的默认值保持一致（LiveCaptions），
+        // 否则配置为空时界面显示 Whisper，但实际运行的是系统实时字幕。
+        string target = string.IsNullOrWhiteSpace(engine) ? "LiveCaptions" : engine;
         int selIdx = 0;
         for (int i = 0; i < SpeechEngineComboBox.Items.Count; i++)
         {
@@ -442,43 +463,63 @@ public sealed partial class SpeechSection : UserControl
 
     private async Task InitAudioDevicesAsync()
     {
-        AudioDeviceComboBox.Items.Clear();
-        AudioDeviceComboBox.Items.Add(new ComboBoxItem { Content = "系统默认设备", Tag = string.Empty });
-
-        _audioDevices = await AudioDeviceService.GetAudioRenderDevicesAsync();
-
-        string currentEndpointId = SettingsService.Instance.AudioInputDeviceId;
-        int selectedIndex = 0;
-
-        for (int i = 0; i < _audioDevices.Count; i++)
+        // 目标进程变化会同时触发 TargetAudioProcessChanged 回调与 ApplyTargetProcess，
+        // 两次并发进入会在各自 await 前 Items.Clear()、之后各 Add 一整套设备，
+        // 造成下拉框重复项和引擎反复 Stop/Start。这里做重入保护。
+        if (_isRefreshingAudioDevices) return;
+        _isRefreshingAudioDevices = true;
+        try
         {
-            var d = _audioDevices[i];
-            string itemText = d.IsDefault ? $"{d.Name} (当前系统默认)" : d.Name;
-            var item = new ComboBoxItem
-            {
-                Content = itemText,
-                Tag = d.EndpointId
-            };
-            AudioDeviceComboBox.Items.Add(item);
+            AudioDeviceComboBox.Items.Clear();
+            AudioDeviceComboBox.Items.Add(new ComboBoxItem { Content = "系统默认设备", Tag = string.Empty });
 
-            if (!string.IsNullOrEmpty(currentEndpointId) &&
-                (string.Equals(d.EndpointId, currentEndpointId, StringComparison.OrdinalIgnoreCase) ||
-                 (currentEndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase) && d.EndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase)) ||
-                 string.Equals(d.Id, currentEndpointId, StringComparison.OrdinalIgnoreCase)))
+            _audioDevices = await AudioDeviceService.GetAudioRenderDevicesAsync();
+
+            string currentEndpointId = SettingsService.Instance.AudioInputDeviceId;
+            int selectedIndex = 0;
+
+            for (int i = 0; i < _audioDevices.Count; i++)
             {
-                selectedIndex = i + 1;
+                var d = _audioDevices[i];
+                string itemText = d.IsDefault ? $"{d.Name} (当前系统默认)" : d.Name;
+                var item = new ComboBoxItem
+                {
+                    Content = itemText,
+                    Tag = d.EndpointId
+                };
+                AudioDeviceComboBox.Items.Add(item);
+
+                if (!string.IsNullOrEmpty(currentEndpointId) &&
+                    (string.Equals(d.EndpointId, currentEndpointId, StringComparison.OrdinalIgnoreCase) ||
+                     (currentEndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase) && d.EndpointId.StartsWith("process:", StringComparison.OrdinalIgnoreCase)) ||
+                     string.Equals(d.Id, currentEndpointId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    selectedIndex = i + 1;
+                }
             }
-        }
 
-        AudioDeviceComboBox.SelectedIndex = selectedIndex;
+            AudioDeviceComboBox.SelectedIndex = selectedIndex;
+        }
+        finally
+        {
+            _isRefreshingAudioDevices = false;
+        }
     }
 
     private async void AudioDeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_isInitializing) return;
+        // 重建下拉框期间（Items.Clear 与末尾的程序化 SelectedIndex 回填）不算用户选择。
+        // 只查 _isInitializing 不够：OnTargetAudioProcessChanged 与 3 秒轮询触发的重建都发生在
+        // _isInitializing == false 的时候，那时末尾那次 SelectedIndex 赋值会被当成用户点击，
+        // 导致保存的设备被清空并落盘，或让引擎为一次进程切换多做一次 Stop/Start。
+        if (_isInitializing || _isRefreshingAudioDevices) return;
 
         int idx = AudioDeviceComboBox.SelectedIndex;
-        if (idx <= 0)
+        // 重建下拉框时 Items.Clear() 会把 SelectedIndex 置为 -1；这不是用户选择，
+        // 若当成“系统默认设备”处理，会在刷新设备/切换目标进程时把已保存的设备重置掉。
+        if (idx < 0) return;
+
+        if (idx == 0)
         {
             await SettingsService.Instance.SwitchAudioDeviceAsync(null, "系统默认设备");
         }
@@ -504,9 +545,11 @@ public sealed partial class SpeechSection : UserControl
 
     private async void RefreshAudioDevicesButton_Click(object sender, RoutedEventArgs e)
     {
-        _isInitializing = true;
+        // 重建期间的重入保护与“程序化选中”回声统一交给 InitAudioDevicesAsync 的
+        // _isRefreshingAudioDevices 处理。这里不再借用 _isInitializing：它会跨越 await
+        // 一直保持 true，把用户在设备枚举期间对其它控件（引擎/语言/开关）的操作全部吞掉，
+        // 造成界面显示新值、配置仍是旧值且不会自愈。
         await InitAudioDevicesAsync();
-        _isInitializing = false;
     }
 
     private void InitTargetProcesses(string? targetName)
@@ -586,7 +629,9 @@ public sealed partial class SpeechSection : UserControl
         bool isRunning = AudioProcessService.IsProcessRunning(procName, out int pid);
         _lastConfiguredProcessRunning = isRunning;
         UpdateProcessStatusDisplay(procName, isRunning, pid);
-        _ = InitAudioDevicesAsync();
+
+        // 设备列表刷新由 TargetAudioProcessChanged 回调统一负责；
+        // 这里再调一次会与回调并发重建下拉框，产生重复设备。
     }
 
     private async void RefreshProcessesButton_Click(object sender, RoutedEventArgs e)

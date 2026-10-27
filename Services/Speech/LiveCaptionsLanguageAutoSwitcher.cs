@@ -300,11 +300,23 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
         int channels = format.Channels;
         if (channels <= 0 || sampleRate <= 0) return;
 
-        bool isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat || format.BitsPerSample == 32;
-        int bytesPerSample = format.BitsPerSample / 8;
+        // 位深只表示容器宽度：32-bit 既可能是整数 PCM，也可能是 IEEE float。
+        // WASAPI 常返回 Extensible，必须查看 SubFormat，不能仅凭 BitsPerSample 猜测。
+        bool isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat;
+        bool isPcm = format.Encoding == WaveFormatEncoding.Pcm;
+        if (format is WaveFormatExtensible extensible)
+        {
+            isFloat = extensible.SubFormat == AudioMediaSubtypes.MEDIASUBTYPE_IEEE_FLOAT;
+            isPcm = extensible.SubFormat == AudioMediaSubtypes.MEDIASUBTYPE_PCM;
+        }
+        int bits = format.BitsPerSample;
+        if (isFloat ? bits != 32 : !isPcm || (bits != 16 && bits != 24 && bits != 32)) return;
+
+        int bytesPerSample = bits / 8;
         int frameSize = bytesPerSample * channels;
         if (frameSize <= 0) return;
 
+        bytesRecorded = Math.Min(bytesRecorded, buffer.Length);
         int totalFrames = bytesRecorded / frameSize;
         if (totalFrames <= 0) return;
 
@@ -375,6 +387,17 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
                 {
                     short s = (short)(buffer[offset] | (buffer[offset + 1] << 8));
                     sum += s / 32768f;
+                }
+                else if (bytesPerSample == 3)
+                {
+                    // 将 little-endian PCM24 左移后算术右移，保留负数的符号扩展。
+                    int s = ((buffer[offset] << 8) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 24)) >> 8;
+                    sum += s / 8388608f;
+                }
+                else if (bytesPerSample == 4)
+                {
+                    // Extensible 中较少的有效位是左对齐的，仍按 32-bit 容器归一化。
+                    sum += BitConverter.ToInt32(buffer, offset) / 2147483648f;
                 }
             }
         }
@@ -483,8 +506,21 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 
                     _ = Task.Run(async () =>
                     {
-                        await _liveCaptionsService.SwitchLanguageAsync(targetToSwitch);
-                        _settingsService.SetLiveCaptionsLanguageCodeSilent(targetToSwitch);
+                        // 只有真正切换成功才同步配置；否则会出现“配置显示新语言，
+                        // 实际 LiveCaptions 仍是旧语言”的静默不一致。
+                        bool switched = await _liveCaptionsService.SwitchLanguageAsync(targetToSwitch);
+                        if (switched)
+                        {
+                            _settingsService.SetLiveCaptionsLanguageCodeSilent(targetToSwitch);
+                        }
+                        else
+                        {
+                            UpdateStatus(
+                                $"自动切换字幕语言失败，仍保持: {_settingsService.LiveCaptionsLanguageCode}",
+                                _settingsService.LiveCaptionsLanguageCode,
+                                0,
+                                HitThreshold);
+                        }
                     });
                 }
             }
@@ -529,9 +565,31 @@ public class LiveCaptionsLanguageAutoSwitcher : IDisposable
 
     public void Dispose()
     {
-        StopWorkerInternal();
-        _earDetector.Dispose();
-        _lock.Dispose();
+        // 与 SetEnabledAsync/RebindAudioCaptureAsync 串行化，避免 Dispose 清空
+        // _activeCaptures 的同时另一条任务又启动新捕获。拿不到锁时直接停止，
+        // 但不释放 _lock（并发 Release 会抛 ObjectDisposedException）。
+        try
+        {
+            if (_lock.Wait(500))
+            {
+                try
+                {
+                    StopWorkerInternal();
+                    _earDetector.Dispose();
+                }
+                finally
+                {
+                    _lock.Release();
+                }
+            }
+            else
+            {
+                StopWorkerInternal();
+                _earDetector.Dispose();
+            }
+        }
+        catch { }
+
         GC.SuppressFinalize(this);
     }
 }

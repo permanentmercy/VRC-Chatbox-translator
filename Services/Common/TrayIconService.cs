@@ -118,7 +118,7 @@ public class TrayIconService : IDisposable
             string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
             if (!File.Exists(iconPath))
             {
-                iconPath = Path.Combine(@"H:\program\chatbox\VrcChatboxDemo\Assets", "AppIcon.ico");
+                iconPath = Path.Combine(Environment.CurrentDirectory, "Assets", "AppIcon.ico");
             }
             if (File.Exists(iconPath))
             {
@@ -163,9 +163,9 @@ public class TrayIconService : IDisposable
         }
         else if (uMsg == WM_CLOSE)
         {
-            // 关闭按钮截获：隐藏主窗口至托盘，保持后台运行
-            ShowWindow(hWnd, 0 /* SW_HIDE */);
-            return IntPtr.Zero;
+            // 不在这里直接 ShowWindow(SW_HIDE)：那会绕过 WinUI 的 AppWindow.Closing，
+            // 导致“关闭到托盘”时 SaveConfigImmediately / 清理逻辑不执行。
+            // 交给 DefSubclassProc → AppWindow.Closing 统一处理隐藏与保存。
         }
 
         return DefSubclassProc(hWnd, uMsg, wParam, lParam);

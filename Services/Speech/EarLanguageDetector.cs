@@ -57,19 +57,28 @@ public class EarLanguageDetector : IDisposable
             _loadedModelName = Path.GetFileNameWithoutExtension(modelPath);
             SpeechService.EnsureCudaEnvironment();
 
-            try
+            // WhisperFactory/Processor 的构建会读取上百 MB 权重并初始化推理后端，
+            // 不能在 UI 线程同步执行，否则用户一打开“自动检测语言”界面就会卡住数秒。
+            var built = await Task.Run(() =>
             {
-                _factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
-            }
-            catch
-            {
-                _factory = WhisperFactory.FromPath(modelPath);
-            }
+                WhisperFactory factory;
+                try
+                {
+                    factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
+                }
+                catch
+                {
+                    factory = WhisperFactory.FromPath(modelPath);
+                }
 
-            _processor = _factory.CreateBuilder()
-                .WithLanguageDetection()
-                .Build();
+                var processor = factory.CreateBuilder()
+                    .WithLanguageDetection()
+                    .Build();
+                return (factory, processor);
+            });
 
+            _factory = built.factory;
+            _processor = built.processor;
             _isInitialized = true;
             return true;
         }
@@ -147,7 +156,7 @@ public class EarLanguageDetector : IDisposable
         }
     }
 
-    private static EarLanguageResult MapToLiveCaptionsLanguage(string shortLang, float probability)
+    private static EarLanguageResult? MapToLiveCaptionsLanguage(string shortLang, float probability)
     {
         string norm = shortLang.Trim().ToLowerInvariant();
         return norm switch
@@ -160,15 +169,36 @@ public class EarLanguageDetector : IDisposable
             "de" => new EarLanguageResult("de-DE", "Deutsch (Deutschland)", probability),
             "es" => new EarLanguageResult("es-ES", "Español (España)", probability),
             "it" => new EarLanguageResult("it-IT", "Italiano (Italia)", probability),
-            _ => new EarLanguageResult("en-US", $"英语 (匹配: {shortLang})", probability)
+            // LiveCaptions 不支持的语种（ru/pt/nl/pl/tr 等）绝不能回退成 en-US：
+            // 否则连续命中 3 次会把字幕强制切成英语，并把配置永久改成 en-US。
+            _ => null
         };
     }
 
     public void Dispose()
     {
-        try { _processor?.Dispose(); } catch { }
-        try { _factory?.Dispose(); } catch { }
-        _lock.Dispose();
+        // 先把状态置为未初始化：Dispose 之后若仍有在途检测进入 DetectFromAudioAsync，
+        // 会在入口直接返回 null，而不是对已释放的 processor 调用 DetectLanguage。
+        _isInitialized = false;
+
+        bool gotLock = false;
+        try { gotLock = _lock.Wait(500); } catch { }
+        try
+        {
+            try { _processor?.Dispose(); } catch { }
+            try { _factory?.Dispose(); } catch { }
+            _processor = null;
+            _factory = null;
+        }
+        finally
+        {
+            if (gotLock)
+            {
+                try { _lock.Release(); } catch { }
+            }
+        }
+
+        // 不 Dispose _lock：并发的检测/初始化仍可能在 finally 里 Release。
         GC.SuppressFinalize(this);
     }
 }

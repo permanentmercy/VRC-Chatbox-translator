@@ -109,6 +109,7 @@
                                TextWrapping="Wrap"
                                FontSize="16"
                                Text="A"
+                               MaxHeight="120"
                                Padding="14,6,8,6"
                                HorizontalAlignment="Stretch"
                                VerticalAlignment="Top" />
@@ -125,8 +126,9 @@
                              Background="Transparent"
                              FontSize="16"
                              MinHeight="36"
+                             MaxHeight="120"
                              Padding="14,6,8,6"
-                             ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              TextChanged="MessageInputBox_TextChanged"
                              PreviewKeyDown="MessageInputBox_PreviewKeyDown"
@@ -157,7 +159,7 @@
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             <Button x:Name="ExitImmersiveButton"
                                     Click="ExitImmersiveButton_Click"
-                                    ToolTipService.ToolTip="退出沉浸模式 (Esc 或快捷键)"
+                                    ToolTipService.ToolTip="退出沉浸模式"
                                     VerticalAlignment="Center"
                                     Width="24"
                                     Height="24"

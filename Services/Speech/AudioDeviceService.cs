@@ -16,8 +16,8 @@ public static class AudioDeviceService
         if (string.IsNullOrEmpty(endpointId)) return false;
         try
         {
-            var enumerator = new MMDeviceEnumerator();
-            var dev = enumerator.GetDevice(endpointId);
+            using var enumerator = new MMDeviceEnumerator();
+            using var dev = enumerator.GetDevice(endpointId);
             return dev.DataFlow == DataFlow.Capture;
         }
         catch
@@ -36,20 +36,20 @@ public static class AudioDeviceService
             var list = new List<AudioDeviceInfo>();
             try
             {
-                var enumerator = new MMDeviceEnumerator();
+                using var enumerator = new MMDeviceEnumerator();
                 string defaultRenderId = string.Empty;
                 string defaultCaptureId = string.Empty;
 
                 try
                 {
-                    var defRender = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                    using var defRender = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                     defaultRenderId = defRender.ID;
                 }
                 catch { }
 
                 try
                 {
-                    var defCapture = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+                    using var defCapture = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
                     defaultCaptureId = defCapture.ID;
                 }
                 catch { }
@@ -70,15 +70,29 @@ public static class AudioDeviceService
                 // 1. 扬声器 / 耳机 (Render)
                 foreach (var d in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
                 {
-                    bool isDef = !string.IsNullOrEmpty(defaultRenderId) && string.Equals(d.ID, defaultRenderId, StringComparison.OrdinalIgnoreCase);
-                    list.Add(new AudioDeviceInfo(d.ID, d.ID, $"[扬声器/耳机] {d.FriendlyName}", isDef));
+                    try
+                    {
+                        bool isDef = !string.IsNullOrEmpty(defaultRenderId) && string.Equals(d.ID, defaultRenderId, StringComparison.OrdinalIgnoreCase);
+                        list.Add(new AudioDeviceInfo(d.ID, d.ID, $"[扬声器/耳机] {d.FriendlyName}", isDef));
+                    }
+                    finally
+                    {
+                        d.Dispose();
+                    }
                 }
 
                 // 2. 麦克风 (Capture)
                 foreach (var d in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
                 {
-                    bool isDef = !string.IsNullOrEmpty(defaultCaptureId) && string.Equals(d.ID, defaultCaptureId, StringComparison.OrdinalIgnoreCase);
-                    list.Add(new AudioDeviceInfo(d.ID, d.ID, $"[麦克风] {d.FriendlyName}", isDef));
+                    try
+                    {
+                        bool isDef = !string.IsNullOrEmpty(defaultCaptureId) && string.Equals(d.ID, defaultCaptureId, StringComparison.OrdinalIgnoreCase);
+                        list.Add(new AudioDeviceInfo(d.ID, d.ID, $"[麦克风] {d.FriendlyName}", isDef));
+                    }
+                    finally
+                    {
+                        d.Dispose();
+                    }
                 }
             }
             catch { }

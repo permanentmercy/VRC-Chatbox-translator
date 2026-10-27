@@ -17,8 +17,47 @@ public partial class SettingsService
     private DateTime _lastInterimTranslationTime = DateTime.MinValue;
     private long _finalTranslationSequence = 0;
     private long _interimTranslationSequence = 0;
+    private long _sentTranslationSequence = 0;
     private bool _isNewSentence = true;
     private string _lastHypothesisSpeech = string.Empty;
+
+    // 语音引擎启停/切换是异步的（Whisper 加载、LiveCaptions 进程重启）。
+    // 用户快速切换引擎或连续拨动开关时，若并发执行会出现“旧引擎刚停、新引擎又被
+    // 另一条任务停掉”的交错，最终两个引擎都可能处于运行/停止的错误状态。
+    private readonly SemaphoreSlim _speechStateLock = new(1, 1);
+    private long _speechStateVersion;
+    private int _speechStateApplying;
+
+    private void OnSpeechRunningStateChanged(string engine, bool running)
+    {
+        // Apply 内的停旧引擎/启动结果是过渡态，由 Apply 根据最新用户意图统一收敛。
+        if (Volatile.Read(ref _speechStateApplying) != 0 ||
+            !string.Equals(SpeechEngine, engine, StringComparison.OrdinalIgnoreCase)) return;
+
+        // 非切换期间的意外停止仍应关闭开关，不能把后台故障伪装成正在监听。
+        // true 只代表 actual 成功，绝不覆盖用户已经写下的 false。
+        if (!running) IsSpeechRecognitionEnabled = false;
+        NotifySpeechRecognitionState();
+    }
+
+    private void NotifySpeechRecognitionState()
+    {
+        void Notify()
+        {
+            // 在 UI 队列真正执行时读取最新值，避免旧事件把开关再次弹回。
+            SpeechRecognitionStateChanged?.Invoke(IsSpeechRecognitionEnabled);
+            DisplaySettingsChanged?.Invoke();
+        }
+
+        if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
+        {
+            App.DispatcherQueueInstance.TryEnqueue(Notify);
+        }
+        else
+        {
+            Notify();
+        }
+    }
 
     public void ClearSubtitleQueue()
     {
@@ -312,6 +351,78 @@ public partial class SettingsService
     }
 
     /// <summary>
+    /// 翻译「我发出去的消息」。结果写入变量 {sent_translation}，
+    /// 常驻模板可选用；开启对应开关时还会自动朗读译文。
+    /// </summary>
+    private async Task TranslateSentMessageAsync(string sentText)
+    {
+        if (string.IsNullOrWhiteSpace(sentText)) return;
+
+        // 连续快速发送时，只允许最后一次请求的结果落到变量与 TTS，
+        // 否则先发消息的慢响应可能覆盖后发消息的译文。
+        long seq = System.Threading.Interlocked.Increment(ref _sentTranslationSequence);
+
+        string targetLang = ParseTargetLanguage(TargetLanguage);
+        try
+        {
+            AddLog("Translate Sent", $"正在翻译我发送的消息: \"{sentText}\" -> {targetLang} ({OllamaModel})", true);
+            var result = await OllamaService.TranslateAsync(
+                sentText, targetLang, OllamaModel, OllamaEndpoint, OllamaPromptTemplate);
+
+            if (seq != Volatile.Read(ref _sentTranslationSequence)) return;
+
+            string cleanTrans = (result.Text ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();
+            if (string.IsNullOrWhiteSpace(cleanTrans))
+            {
+                // 译文为空时退回朗读原文，避免“两个开关都开了却完全没有播报”
+                SpeakSentOriginalFallback(sentText);
+                return;
+            }
+
+            VariableService.SetVariable("sent_translation", cleanTrans, "我发送消息的翻译",
+                "本程序最近一次发送的聊天文本翻译成目标语言后的结果");
+            AddLog("Translate Sent Response", $"{cleanTrans} ({result.LatencyMs}ms)", true);
+
+            // 常驻模板接管消息显示时，把译文也并入模板（未显式引用则自动追加瞬态块）
+            if (PersistentTextService.IsManagingSentMessages(VariableService))
+            {
+                await PersistentTextService.NotifySentTranslationAsync(cleanTrans, VariableService, OscService);
+            }
+
+            if (IsTtsEnabled && IsTtsAutoReadSentTranslation)
+            {
+                string cleanTts = PrepareTextForTts(cleanTrans);
+                if (!string.IsNullOrWhiteSpace(cleanTts))
+                {
+                    _ = SpeakTextAsync(cleanTts);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (seq == Volatile.Read(ref _sentTranslationSequence))
+            {
+                SpeakSentOriginalFallback(sentText);
+            }
+            AddLog("Translate Sent Error", $"翻译发送消息失败: {ex.Message}", false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 发送消息的翻译失败/为空时的兜底：若用户同时开启了“朗读已发送消息”，改读原文。
+    /// </summary>
+    private void SpeakSentOriginalFallback(string sentText)
+    {
+        if (!IsTtsEnabled || !IsTtsAutoReadSentMessage) return;
+
+        string cleanTts = PrepareTextForTts(sentText);
+        if (!string.IsNullOrWhiteSpace(cleanTts))
+        {
+            _ = SpeakTextAsync(cleanTts);
+        }
+    }
+
+    /// <summary>
     /// 手动发起一次 Ollama 连通性与翻译效果测试
     /// </summary>
     public async Task<TranslationResult> TestOllamaTranslationAsync(string testText = "你好，欢迎来到 VRChat！")
@@ -500,25 +611,62 @@ public partial class SettingsService
 
     public async Task ApplySpeechStateAsync()
     {
-        DisplaySettingsChanged?.Invoke();
-
-        if (IsSpeechRecognitionEnabled)
+        await _speechStateLock.WaitAsync();
+        Interlocked.Exchange(ref _speechStateApplying, 1);
+        long version = Volatile.Read(ref _speechStateVersion);
+        string engine = SpeechEngine;
+        try
         {
-            if (string.Equals(SpeechEngine, "LiveCaptions", StringComparison.OrdinalIgnoreCase))
+            DisplaySettingsChanged?.Invoke();
+
+            // await 期间用户仍可修改开关/引擎。旧启动完成后先重新读取意图，
+            // 必要时在释放锁之前停止它，而不是用 actual 事件把关闭改回开启。
+            while (true)
             {
-                await SpeechService.StopAsync();
-                await LiveCaptionsService.StartAsync(Config.LiveCaptionsHideNativeWindow);
-            }
-            else
-            {
-                await LiveCaptionsService.StopAsync();
-                await SpeechService.StartAsync(SpeechLanguageTag, AudioInputDeviceId);
+                version = Volatile.Read(ref _speechStateVersion);
+                engine = SpeechEngine;
+                if (!IsSpeechRecognitionEnabled)
+                {
+                    await SpeechService.StopAsync();
+                    await LiveCaptionsService.StopAsync();
+                }
+                else
+                {
+                    bool isLiveCaptions = string.Equals(engine, "LiveCaptions", StringComparison.OrdinalIgnoreCase);
+                    if (isLiveCaptions) await SpeechService.StopAsync();
+                    else await LiveCaptionsService.StopAsync();
+
+                    if (version != Volatile.Read(ref _speechStateVersion)) continue;
+
+                    bool started = isLiveCaptions
+                        ? await LiveCaptionsService.StartAsync(Config.LiveCaptionsHideNativeWindow)
+                        : await SpeechService.StartAsync(SpeechLanguageTag, AudioInputDeviceId);
+
+                    if (version != Volatile.Read(ref _speechStateVersion)) continue;
+
+                    bool running = isLiveCaptions ? LiveCaptionsService.IsRunning : SpeechService.IsListening;
+                    if (!started || !running) IsSpeechRecognitionEnabled = false;
+                }
+
+                if (version == Volatile.Read(ref _speechStateVersion)) break;
             }
         }
-        else
+        catch (Exception ex)
         {
-            await SpeechService.StopAsync();
-            await LiveCaptionsService.StopAsync();
+            // 仅回滚同一请求；迟到的失败也不能覆盖更新的开启/引擎选择。
+            if (version == Volatile.Read(ref _speechStateVersion) &&
+                string.Equals(engine, SpeechEngine, StringComparison.OrdinalIgnoreCase))
+            {
+                IsSpeechRecognitionEnabled = false;
+            }
+            SpeechStatus = $"应用语音状态失败: {ex.Message}";
+            SpeechStatusUpdated?.Invoke(SpeechStatus);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _speechStateApplying, 0);
+            _speechStateLock.Release();
+            NotifySpeechRecognitionState();
         }
     }
 

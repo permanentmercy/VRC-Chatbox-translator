@@ -41,7 +41,7 @@ public partial class SpeechService
                 }
                 else
                 {
-                    var projCandidate = Path.Combine(@"H:\program\chatbox\VrcChatboxDemo", filePath);
+                    var projCandidate = Path.Combine(Environment.CurrentDirectory, filePath);
                     if (File.Exists(projCandidate))
                     {
                         filePath = projCandidate;
@@ -195,7 +195,10 @@ public partial class SpeechService
     /// </summary>
     private async Task ProcessLiveAudioLoopAsync(CancellationToken ct)
     {
-        if (_wave16 == null) return;
+        // 捕获本地引用：StopInternalAsync 会把字段置 null，直接读字段可能在
+        // “检查非空”和“调用 Read”之间被另一线程清空，产生 NullReference。
+        var wave16 = _wave16;
+        if (wave16 == null) return;
 
         var chunkBuffer = new byte[2560]; // 80ms 采样块
         using var speechStream = new MemoryStream();
@@ -204,6 +207,25 @@ public partial class SpeechService
         var lastVoiceTime = Stopwatch.StartNew();
         var speechStartTime = Stopwatch.StartNew();
         var lastHypothesisTime = Stopwatch.StartNew();
+
+        // 统一提交当前语音段：清空缓冲区并投递终句。
+        // 连续有声时也必须能走到这里，否则 speechStream 会无限增长。
+        void CommitSpeechSegment()
+        {
+            byte[] pcmBytes;
+            lock (bufferLock)
+            {
+                pcmBytes = speechStream.ToArray();
+                speechStream.SetLength(0);
+            }
+            inSpeech = false;
+
+            if (pcmBytes.Length >= 16000 * 2 * 0.2)
+            {
+                long seq = Interlocked.Increment(ref _sequenceCounter);
+                _speechChannel?.Writer.TryWrite(new SpeechQueueItem(SpeechQueueItemType.FinalSentence, pcmBytes, seq));
+            }
+        }
 
         const double voiceThresholdRms = 30.0;     // 灵敏度门限 (Windows数字静音通常为 0~5)
         const int silenceTimeoutMs = 650;          // 停顿 650ms 断句确认
@@ -216,7 +238,7 @@ public partial class SpeechService
                 int maxSpeechBytes = 16000 * 2 * sliceSecs;
                 int maxSpeechMs = sliceSecs * 1000;
 
-                int bytesRead = _wave16.Read(chunkBuffer.AsSpan());
+                int bytesRead = wave16.Read(chunkBuffer.AsSpan());
                 double rms = 0;
 
                 if (bytesRead > 0)
@@ -268,6 +290,15 @@ public partial class SpeechService
                         long seq = Interlocked.Increment(ref _sequenceCounter);
                         _speechChannel?.Writer.TryWrite(new SpeechQueueItem(SpeechQueueItemType.Hypothesis, snapshot, seq));
                     }
+
+                    // 连续有声（背景音乐、长时间说话）时不会进入下面的静音分支，
+                    // 因此切片上限必须在这里也检查，否则 speechStream 永远不清空，
+                    // 假说快照越来越大、推理越来越慢，最终卡死且永不提交。
+                    if (speechStream.Length >= maxSpeechBytes ||
+                        speechStartTime.ElapsedMilliseconds >= maxSpeechMs)
+                    {
+                        CommitSpeechSegment();
+                    }
                 }
                 else
                 {
@@ -286,19 +317,7 @@ public partial class SpeechService
                             speechStream.Length >= maxSpeechBytes ||
                             speechStartTime.ElapsedMilliseconds >= maxSpeechMs)
                         {
-                            byte[] pcmBytes;
-                            lock (bufferLock)
-                            {
-                                pcmBytes = speechStream.ToArray();
-                                speechStream.SetLength(0);
-                            }
-                            inSpeech = false;
-
-                            if (pcmBytes.Length >= 16000 * 2 * 0.2)
-                            {
-                                long seq = Interlocked.Increment(ref _sequenceCounter);
-                                _speechChannel?.Writer.TryWrite(new SpeechQueueItem(SpeechQueueItemType.FinalSentence, pcmBytes, seq));
-                            }
+                            CommitSpeechSegment();
                         }
                     }
                 }

@@ -14,6 +14,12 @@ public class OscService : IDisposable
     private string _host = "127.0.0.1";
     private int _port = 9000;
 
+    /// <summary>
+    /// 保护 _udpClient 的创建/替换/释放。不能在发送期间持有它跨越 await：
+    /// Host/Port setter 可能在 UI 线程同步调用，跨 await 持锁会造成死锁。
+    /// </summary>
+    private readonly object _clientLock = new();
+
     public string Host
     {
         get => _host;
@@ -44,17 +50,27 @@ public class OscService : IDisposable
 
     private void ResetClient()
     {
-        _udpClient?.Dispose();
-        _udpClient = null;
+        UdpClient? old;
+        lock (_clientLock)
+        {
+            old = _udpClient;
+            _udpClient = null;
+        }
+
+        // 在锁外释放：Dispose 可能阻塞，避免阻塞发送路径。
+        try { old?.Dispose(); } catch { }
     }
 
     private UdpClient GetClient()
     {
-        if (_udpClient == null)
+        lock (_clientLock)
         {
-            _udpClient = new UdpClient();
+            // 如果 ResetClient 刚把旧 client 置空，这里会新建一个；
+            // 已取到旧引用的发送会被 ObjectDisposedException 捕获并记失败日志，
+            // 不会静默丢包。
+            _udpClient ??= new UdpClient();
+            return _udpClient;
         }
-        return _udpClient;
     }
 
     /// <summary>
@@ -178,7 +194,12 @@ public class OscService : IDisposable
 
     public void Dispose()
     {
-        _udpClient?.Dispose();
-        _udpClient = null;
+        UdpClient? old;
+        lock (_clientLock)
+        {
+            old = _udpClient;
+            _udpClient = null;
+        }
+        try { old?.Dispose(); } catch { }
     }
 }

@@ -35,14 +35,21 @@ public static class AudioProcessService
 
         // 1. 检查已配置的目标进程状态并置顶
         var targetProcs = Process.GetProcessesByName(targetName);
-        if (targetProcs.Length > 0)
+        try
         {
-            var p = targetProcs[0];
-            result.Add(new AudioProcessInfo(targetName, $"{targetName} (PID: {p.Id}，运行中)", p.Id, true));
+            if (targetProcs.Length > 0)
+            {
+                var p = targetProcs[0];
+                result.Add(new AudioProcessInfo(targetName, $"{targetName} (PID: {p.Id}，运行中)", p.Id, true));
+            }
+            else
+            {
+                result.Add(new AudioProcessInfo(targetName, $"{targetName} (未找到 / 未运行)", 0, false));
+            }
         }
-        else
+        finally
         {
-            result.Add(new AudioProcessInfo(targetName, $"{targetName} (未找到 / 未运行)", 0, false));
+            foreach (var p in targetProcs) p.Dispose();
         }
         seenNames.Add(targetName);
 
@@ -108,13 +115,20 @@ public static class AudioProcessService
         if (!seenNames.Contains("VRChat"))
         {
             var vrProcs = Process.GetProcessesByName("VRChat");
-            if (vrProcs.Length > 0)
+            try
             {
-                result.Add(new AudioProcessInfo("VRChat", $"VRChat (PID: {vrProcs[0].Id}，运行中)", vrProcs[0].Id, true));
+                if (vrProcs.Length > 0)
+                {
+                    result.Add(new AudioProcessInfo("VRChat", $"VRChat (PID: {vrProcs[0].Id}，运行中)", vrProcs[0].Id, true));
+                }
+                else
+                {
+                    result.Add(new AudioProcessInfo("VRChat", "VRChat (未找到 / 未运行)", 0, false));
+                }
             }
-            else
+            finally
             {
-                result.Add(new AudioProcessInfo("VRChat", "VRChat (未找到 / 未运行)", 0, false));
+                foreach (var p in vrProcs) p.Dispose();
             }
         }
 
@@ -131,12 +145,19 @@ public static class AudioProcessService
         if (string.IsNullOrWhiteSpace(clean)) return false;
 
         var procs = Process.GetProcessesByName(clean);
-        if (procs.Length > 0)
+        try
         {
-            pid = procs[0].Id;
-            return true;
+            if (procs.Length > 0)
+            {
+                pid = procs[0].Id;
+                return true;
+            }
+            return false;
         }
-        return false;
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
     }
 
     public static string NormalizeProcessName(string? rawName)
