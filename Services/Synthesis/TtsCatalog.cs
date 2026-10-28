@@ -209,4 +209,37 @@ public static class TtsCatalog
             return false;
         }
     }
+
+    /// <summary>
+    /// 组装服务端的权重注册表参数（``--models "a.pth=a.pth,b.pth=b.pth"``），
+    /// 并在所选权重存在时附加 ``--default-model``。
+    /// 抽成纯函数的原因：这段拼装涉及命令行引号与「所选权重不在目录中」的回退，
+    /// 出错时服务端会静默退回单模型，只有测试才能守住。
+    /// </summary>
+    public static string BuildModelRegistryArgs(
+        IReadOnlyList<TtsModelOption> models,
+        string? selectedModel,
+        Action<string>? log = null)
+    {
+        if (models == null || models.Count == 0) return string.Empty;
+
+        string registry = string.Join(",", models.Select(m => $"{m.FileName}={m.FileName}"));
+        string args = $" --models \"{registry}\"";
+
+        bool selectedExists = !string.IsNullOrWhiteSpace(selectedModel) &&
+                              models.Any(m => string.Equals(m.FileName, selectedModel, StringComparison.OrdinalIgnoreCase));
+
+        if (selectedExists)
+        {
+            args += $" --default-model \"{selectedModel}\"";
+        }
+        else
+        {
+            log?.Invoke(
+                $"[Server] 配置里的权重 {selectedModel} 不在 checkpoints 目录中，" +
+                $"本次以第一个可用权重作为默认值。");
+        }
+
+        return args;
+    }
 }

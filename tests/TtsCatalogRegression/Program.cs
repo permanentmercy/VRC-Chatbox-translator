@@ -170,6 +170,49 @@ try
         Touch(weight);
         Check(!TtsCatalog.IsQuantizedCheckpoint(weight), "missing sidecar must be false");
     });
+
+    Case("registry args are empty without weights", () =>
+    {
+        Check(TtsCatalog.BuildModelRegistryArgs(new List<VrcChatboxDemo.Services.Tts.TtsModelOption>(), "x") == string.Empty,
+            "empty catalog must produce no arguments");
+        Check(TtsCatalog.BuildModelRegistryArgs(null!, "x") == string.Empty, "null catalog must produce no arguments");
+    });
+
+    Case("registry args quote the alias table", () =>
+    {
+        var models = new List<VrcChatboxDemo.Services.Tts.TtsModelOption>
+        {
+            new("a.pth", "a", "a", 1, false, false, false),
+            new("b.pth", "b", "b", 1, false, false, false)
+        };
+        string args = TtsCatalog.BuildModelRegistryArgs(models, "a.pth");
+        Check(args.Contains("--models \"a.pth=a.pth,b.pth=b.pth\""), "registry not quoted correctly: " + args);
+        Check(args.Contains("--default-model \"a.pth\""), "default model missing: " + args);
+    });
+
+    Case("registry args omit the default model when it is missing", () =>
+    {
+        var models = new List<VrcChatboxDemo.Services.Tts.TtsModelOption>
+        {
+            new("a.pth", "a", "a", 1, false, false, false)
+        };
+        var logs = new List<string>();
+        string args = TtsCatalog.BuildModelRegistryArgs(models, "gone.pth", logs.Add);
+
+        Check(!args.Contains("--default-model"), "missing weight must not be passed as default: " + args);
+        Check(args.Contains("--models"), "registry must still be registered: " + args);
+        Check(logs.Count == 1 && logs[0].Contains("gone.pth"), "missing weight was not reported");
+    });
+
+    Case("default model matching is case insensitive", () =>
+    {
+        var models = new List<VrcChatboxDemo.Services.Tts.TtsModelOption>
+        {
+            new("Aya.pth", "a", "a", 1, false, false, false)
+        };
+        string args = TtsCatalog.BuildModelRegistryArgs(models, "aya.PTH");
+        Check(args.Contains("--default-model \"aya.PTH\""), "case-insensitive match failed: " + args);
+    });
 }
 finally
 {

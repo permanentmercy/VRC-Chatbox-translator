@@ -511,25 +511,8 @@ public sealed class TtsService : IDisposable
     {
         try
         {
-            var models = DiscoverModels(serverScriptPath);
-            if (models.Count == 0) return string.Empty;
-
-            string registry = string.Join(",", models.Select(m => $"{m.FileName}={m.FileName}"));
-            string args = $" --models \"{registry}\"";
-
-            bool selectedExists = models.Any(
-                m => string.Equals(m.FileName, selectedModel, StringComparison.OrdinalIgnoreCase));
-            if (selectedExists)
-            {
-                args += $" --default-model \"{selectedModel}\"";
-            }
-            else
-            {
-                LogOccurred?.Invoke(
-                    $"[Server] 配置里的权重 {selectedModel} 不在 checkpoints 目录中，" +
-                    $"本次以第一个可用权重作为默认值。");
-            }
-            return args;
+            // 拼装规则（含引号与"所选权重不在目录中"的回退）在 TtsCatalog 里，可单独测试。
+            return TtsCatalog.BuildModelRegistryArgs(DiscoverModels(serverScriptPath), selectedModel, LogOccurred);
         }
         catch (Exception ex)
         {
