@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using VrcChatboxDemo.Services.Synthesis;
 
 namespace VrcChatboxDemo.Services.Tts;
 
@@ -130,216 +131,28 @@ public sealed class TtsService : IDisposable
         return devices;
     }
 
-    /// <summary>
-    /// 定位音色特征目录：与 checkpoints 同级的 prompts/
-    /// </summary>
-    public static string? ResolvePromptsDir(string? serverScriptPath = null)
-    {
-        string? checkpoints = ResolveCheckpointsDir(serverScriptPath);
-        if (checkpoints == null) return null;
+    // 权重与音色目录扫描已移入 Core：TtsCatalog（无状态、不读单例配置）。
+    // 这里保留实例方法做兼容转发，UI 与内部调用无需改动。
 
-        string? dir = Path.GetDirectoryName(checkpoints);
-        if (string.IsNullOrEmpty(dir)) return null;
+    /// <summary>兼容转发：目录定位见 <see cref="TtsCatalog.ResolvePromptsDir"/>。</summary>
+    public static string? ResolvePromptsDir(string? serverScriptPath = null) =>
+        TtsCatalog.ResolvePromptsDir(serverScriptPath ?? SettingsService.Instance.Config.TtsServerScriptPath);
 
-        return Path.Combine(dir, "prompts");
-    }
+    /// <summary>兼容转发：音色扫描见 <see cref="TtsCatalog.DiscoverPrompts"/>。</summary>
+    public List<TtsPromptOption> DiscoverPrompts(string? serverScriptPath = null) =>
+        TtsCatalog.DiscoverPrompts(serverScriptPath ?? SettingsService.Instance.Config.TtsServerScriptPath, LogOccurred);
 
-    /// <summary>
-    /// 扫描 prompts 目录里所有可用的音色特征（cond_mel）。
-    ///
-    /// 音色与权重是**解耦**的：权重决定咬字/韵律，音色决定声线，
-    /// 两者可以自由组合（比如用阿也的 LoRA 配 me 的音色）。
-    /// </summary>
-    public List<TtsPromptOption> DiscoverPrompts(string? serverScriptPath = null)
-    {
-        var list = new List<TtsPromptOption>();
-        string? dir = ResolvePromptsDir(serverScriptPath);
+    /// <summary>兼容转发：配套关系判断见 <see cref="TtsCatalog.IsPromptPairedWith"/>。</summary>
+    public static bool IsPromptPairedWith(string promptFile, string checkpointFile) =>
+        TtsCatalog.IsPromptPairedWith(promptFile, checkpointFile);
 
-        if (dir == null || !Directory.Exists(dir))
-        {
-            LogOccurred?.Invoke($"未找到音色目录: {dir ?? "(路径无效)"}");
-            return list;
-        }
+    /// <summary>兼容转发：目录定位见 <see cref="TtsCatalog.ResolveCheckpointsDir"/>。</summary>
+    public static string? ResolveCheckpointsDir(string? serverScriptPath = null) =>
+        TtsCatalog.ResolveCheckpointsDir(serverScriptPath ?? SettingsService.Instance.Config.TtsServerScriptPath);
 
-        try
-        {
-            foreach (var path in Directory.EnumerateFiles(dir, "*.pt"))
-            {
-                string name = Path.GetFileName(path);
-                long size = 0;
-                try { size = new FileInfo(path).Length; } catch { }
-
-                string stem = Path.GetFileNameWithoutExtension(name);
-                // X_prompt.pt 是「某个权重 X.pth 的配套音色」，去掉后缀就是它属于谁
-                bool isPaired = stem.EndsWith("_prompt", StringComparison.OrdinalIgnoreCase);
-                string owner = isPaired ? stem[..^"_prompt".Length] : "";
-
-                string desc = isPaired
-                    ? $"{size / 1024.0:F0} KB · 配套权重 {owner}.pth"
-                    : $"{size / 1024.0:F0} KB · 独立音色";
-
-                list.Add(new TtsPromptOption(
-                    FileName: name,
-                    DisplayName: $"{name}    ({desc})",
-                    Description: desc,
-                    SizeBytes: size));
-            }
-
-            // 配套音色在前（按权重名排），独立的排后面
-            list.Sort((a, b) =>
-            {
-                bool pa = a.FileName.EndsWith("_prompt.pt", StringComparison.OrdinalIgnoreCase);
-                bool pb = b.FileName.EndsWith("_prompt.pt", StringComparison.OrdinalIgnoreCase);
-                if (pa != pb) return pa ? -1 : 1;
-                return string.Compare(a.FileName, b.FileName, StringComparison.OrdinalIgnoreCase);
-            });
-        }
-        catch (Exception ex)
-        {
-            LogOccurred?.Invoke($"扫描音色目录异常: {ex.Message}");
-        }
-
-        return list;
-    }
-
-    /// <summary>
-    /// 判断某个音色文件是不是某个权重的配套音色（X.pth ↔ X_prompt.pt）
-    /// </summary>
-    public static bool IsPromptPairedWith(string promptFile, string checkpointFile)
-    {
-        if (string.IsNullOrWhiteSpace(promptFile) || string.IsNullOrWhiteSpace(checkpointFile)) return false;
-        string pStem = Path.GetFileNameWithoutExtension(promptFile);
-        string cStem = Path.GetFileNameWithoutExtension(checkpointFile);
-        return pStem.Equals(cStem + "_prompt", StringComparison.OrdinalIgnoreCase);
-    }
-
-    // ======================================================================
-    // 推理权重发现
-    // ======================================================================
-
-    /// <summary>
-    /// 定位 checkpoints 目录：与 tts_server.py 同级（IndexTTS 仓库的权重目录）
-    /// </summary>
-    public static string? ResolveCheckpointsDir(string? serverScriptPath = null)
-    {
-        string script = serverScriptPath ?? SettingsService.Instance.Config.TtsServerScriptPath;
-        if (string.IsNullOrWhiteSpace(script)) return null;
-
-        string? dir = Path.GetDirectoryName(script);
-        if (string.IsNullOrEmpty(dir)) return null;
-
-        return Path.Combine(dir, "checkpoints");
-    }
-
-    /// <summary>
-    /// 扫描 checkpoints 目录里所有可用的 **GPT 主干权重**。
-    ///
-    /// 排除项：``bigvgan_*`` / ``dvae*`` 是声码器与 DVAE 权重，不是可切换的推理权重。
-    /// 是否 FP8 量化由同名的 ``.json`` 边车文件（``tools/quantize_gpt.py`` 产出）判断。
-    /// </summary>
-    public List<TtsModelOption> DiscoverModels(string? serverScriptPath = null)
-    {
-        var list = new List<TtsModelOption>();
-        string? dir = ResolveCheckpointsDir(serverScriptPath);
-
-        if (dir == null || !Directory.Exists(dir))
-        {
-            LogOccurred?.Invoke($"未找到 checkpoints 目录: {dir ?? "(路径无效)"}");
-            return list;
-        }
-
-        // 音色特征目录：服务端按 "prompts/<权重名>_prompt.pt" 的约定去找配套音色。
-        // 没有配套文件的话，切换权重后声线不会变（会回退到默认音色），这里要在 UI 上说清楚。
-        string promptDir = Path.Combine(Path.GetDirectoryName(dir) ?? "", "prompts");
-
-        try
-        {
-            foreach (var path in Directory.EnumerateFiles(dir, "*.pth"))
-            {
-                string name = Path.GetFileName(path);
-                string lower = name.ToLowerInvariant();
-
-                // 声码器 / DVAE 权重不是 GPT 推理权重，跳过
-                if (lower.StartsWith("bigvgan") || lower.StartsWith("dvae")) continue;
-
-                long size = 0;
-                try { size = new FileInfo(path).Length; } catch { }
-
-                bool quantized = IsQuantizedCheckpoint(path);
-
-                // 是否配套了音色特征文件
-                string stem = Path.GetFileNameWithoutExtension(name);
-                bool hasPrompt = !string.IsNullOrEmpty(stem) &&
-                                 File.Exists(Path.Combine(promptDir, stem + "_prompt.pt"));
-
-                // gpt.pth 之类没带 lora 后缀的，视为未微调的原始底模
-                bool isBase = !lower.Contains("lora");
-
-                string sizeText = size > 0 ? $"{size / 1024.0 / 1024 / 1024:F2} GB" : "大小未知";
-                string tag = quantized
-                    ? "FP8 量化 · 省显存"
-                    : size >= 1_500_000_000L
-                        ? "fp32 原始 · 加载后转 fp16"
-                        : "fp16";
-
-                string desc = $"{sizeText} · {tag}";
-                if (isBase)
-                {
-                    desc += isBase && !hasPrompt
-                        ? " · 原始底模，未学过任何特定音色"
-                        : " · 原始底模";
-                }
-                else if (!hasPrompt)
-                {
-                    desc += " · ⚠️ 缺配套音色文件，切换后声线不变";
-                }
-
-                list.Add(new TtsModelOption(
-                    FileName: name,
-                    DisplayName: $"{name}    ({desc})",
-                    Description: desc,
-                    SizeBytes: size,
-                    IsQuantized: quantized,
-                    HasMatchingPrompt: hasPrompt,
-                    IsBaseModel: isBase));
-            }
-
-            // 排序：有配套音色的微调权重优先 > 量化 > 名称；缺音色的和底模垫底
-            list.Sort((a, b) =>
-            {
-                if (a.HasMatchingPrompt != b.HasMatchingPrompt) return a.HasMatchingPrompt ? -1 : 1;
-                if (a.IsBaseModel != b.IsBaseModel) return a.IsBaseModel ? 1 : -1;
-                if (a.IsQuantized != b.IsQuantized) return a.IsQuantized ? -1 : 1;
-                return string.Compare(a.FileName, b.FileName, StringComparison.OrdinalIgnoreCase);
-            });
-        }
-        catch (Exception ex)
-        {
-            LogOccurred?.Invoke($"扫描权重目录异常: {ex.Message}");
-        }
-
-        return list;
-    }
-
-    /// <summary>
-    /// 判断某个 checkpoint 是否是 FP8 量化版（看同名 .json 边车里的 format 字段）
-    /// </summary>
-    private static bool IsQuantizedCheckpoint(string checkpointPath)
-    {
-        try
-        {
-            string metaPath = Path.ChangeExtension(checkpointPath, ".json");
-            if (!File.Exists(metaPath)) return false;
-
-            using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
-            return doc.RootElement.TryGetProperty("format", out var fmt) &&
-                   (fmt.GetString() ?? "").Contains("fp8", StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    /// <summary>兼容转发：权重扫描见 <see cref="TtsCatalog.DiscoverModels"/>。</summary>
+    public List<TtsModelOption> DiscoverModels(string? serverScriptPath = null) =>
+        TtsCatalog.DiscoverModels(serverScriptPath ?? SettingsService.Instance.Config.TtsServerScriptPath, LogOccurred);
 
     private static bool IsVirtualAudioDevice(string name)
     {
