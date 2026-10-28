@@ -334,14 +334,21 @@ VrcChatboxDemo/
 │     ├─ SpeechSection / TranslationSection / TtsSection
 │     ├─ HotkeySection / InteractionSection / NetworkLogSection
 ├─ Services/
-│  ├─ Common/                        # AppConfig / TrayIconService / TransparentBackdrop
+│  ├─ Configuration/                 # AppConfig（配置模型）+ ConfigStore（读写/防抖/迁移）
+│  ├─ Text/                          # ChatTextNormalizer（换行展开 / 144 字符截断 / 朗读前清洗）
+│  ├─ Messaging/                     # TypingIndicator（逐字上屏 + 打字动画心跳）
+│  ├─ Platform/                      # TrayIconService（系统托盘，Win32）
 │  ├─ Input/                         # HotkeyService（Win32 低层钩子 + 封装）
 │  ├─ Osc/                           # OscService（UDP 发送）+ Inbound（HTTP/UDP 接收）
-│  ├─ Settings/                      # SettingsService（聚合根：属性/事件/OSC 发送/恢复默认）
-│  ├─ Speech/                        # SpeechService(Whisper) / LiveCaptionsService / 音频设备与进程捕获
-│  ├─ Translation/                   # OllamaService
+│  ├─ Settings/                      # SettingsService（门面：属性/事件/恢复默认，内部委托给下列模块）
+│  ├─ Speech/                        # SpeechService(Whisper) / LiveCaptionsService /
+│  │                                 #   SpeechEngineCoordinator（启停状态机）/ SubtitlePipeline（字幕队列）
+│  ├─ Translation/                   # OllamaService + TranslationPolicy（档位与语言归一化）
 │  ├─ Template/                      # PersistentTextService / VariableService / VrcInGameGuard
 │  └─ Tts/                           # TtsService（IndexTTS 流式推流 + 虚拟声卡）
+├─ Views/Shared/                     # TransparentBackdrop（沉浸窗透明背景）
+├─ docs/ARCHITECTURE.md              # 分层规则、上帝对象拆解进度、新增功能放哪
+├─ tests/                            # 22 套确定性回归（直接编译生产类，不依赖 WinUI）
 ├─ Models/                           # 本地 Whisper 模型文件（*.bin）
 ├─ Assets/                          # 应用图标等资源
 ├─ config.json                      # 运行时配置（自动持久化）

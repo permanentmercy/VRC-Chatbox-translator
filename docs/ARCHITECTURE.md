@@ -56,18 +56,19 @@
 
 ```
 Services/
-  Common/        跨模块的纯数据模型与通用工具（AppConfig、TransparentBackdrop）
-  Configuration/ 配置持久化（ConfigStore）
+  Configuration/ 配置模型与持久化（AppConfig、ConfigStore）
   Text/          纯文本规范化（ChatTextNormalizer）
   Messaging/     发送侧时序（TypingIndicator）；后续 ChatSender
+  Platform/      Win32 平台能力（TrayIconService）
   Input/         Win32 热键（HotkeyService*.cs）
   Osc/           OSC 出站与 Inbound 入站（含 Http/Osc 分部）
   Settings/      SettingsService 门面（过渡期保留）
-  Speech/        语音识别、字幕、音频捕获
+  Speech/        语音识别、引擎协调、字幕管线、音频捕获
   Template/      常驻文本与变量
-  Translation/   Ollama
+  Translation/   Ollama + 翻译策略
   Tts/           TTS
 Views/
+  Shared/        视图层共享组件（TransparentBackdrop）
   *.xaml        设置页外壳
   Sections/     各设置页的片段（一个功能一个文件）
   Immersive/    沉浸窗分部（拖拽 / 命中测试 / Win32）
@@ -88,6 +89,6 @@ tests/
 1. `SettingsService.Osc.cs` → `ChatSender`/`TypingIndicator`（含 110ms 节流与打字心跳）。
 2. `SettingsService.Speech.cs` → `SubtitlePipeline`（假说/定稿/翻译触发/队列容量）。
 3. `TtsService` 三段拆分（服务端进程 / 流式 HTTP / WASAPI 播放）。
-4. `Services/Common` 拆分：`TrayIconService`、`TransparentBackdrop` 属平台/UI，应移入 `Platform/`、`Ui/Shared/`。
+4. `Services/Common` 拆分：`TrayIconService`、`TransparentBackdrop` 属平台/UI，应移入 `Platform/`、`Ui/Shared/`。 ✅ 已完成（`Services/Common` 目录已删除）
 5. 测试工程抽取公共 Harness，消除 16 份重复的 Roslyn 抽取代码。
 6. `Views/Sections/*.xaml.cs`（合计约 2,200 行）逐步改为通过构造函数接收依赖，减少对 `SettingsService.Instance` 的直接访问。

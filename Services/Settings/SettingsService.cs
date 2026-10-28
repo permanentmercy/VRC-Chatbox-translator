@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using Microsoft.UI;
 using Microsoft.UI.Xaml.Media;
+using VrcChatboxDemo.Services.Configuration;
 using VrcChatboxDemo.Services.Speech;
 using VrcChatboxDemo.Services.Tts;
 

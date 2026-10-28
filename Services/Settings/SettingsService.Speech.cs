@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using VrcChatboxDemo.Services.Configuration;
 using VrcChatboxDemo.Services.Speech;
 using VrcChatboxDemo.Services.Translation;
 

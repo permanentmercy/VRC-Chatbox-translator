@@ -7,6 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\Services\Translation\TranslationPolicy.cs" Link="Production\TranslationPolicy.cs" />
-    <Compile Include="..\..\Services\Common\AppConfig.cs" Link="Production\AppConfig.cs" />
+    <Compile Include="..\..\Services\Configuration\AppConfig.cs" Link="Production\AppConfig.cs" />
   </ItemGroup>
 </Project>

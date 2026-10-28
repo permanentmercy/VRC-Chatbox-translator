@@ -7,7 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- 直接编译生产类：ConfigStore 不依赖任何运行时服务，无需 Roslyn 抽取源码文本。 -->
-    <Compile Include="..\..\Services\Common\AppConfig.cs" Link="Production\AppConfig.cs" />
+    <Compile Include="..\..\Services\Configuration\AppConfig.cs" Link="Production\AppConfig.cs" />
     <Compile Include="..\..\Services\Configuration\ConfigStore.cs" Link="Production\ConfigStore.cs" />
   </ItemGroup>
 </Project>

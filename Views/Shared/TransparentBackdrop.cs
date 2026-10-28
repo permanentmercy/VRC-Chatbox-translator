@@ -3,7 +3,7 @@ using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 
-namespace VrcChatboxDemo.Services;
+namespace VrcChatboxDemo.Views.Shared;
 
 public class TransparentBackdrop : SystemBackdrop
 {

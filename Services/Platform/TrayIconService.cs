@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 
-namespace VrcChatboxDemo.Services;
+namespace VrcChatboxDemo.Services.Platform;
 
 public class TrayIconService : IDisposable
 {

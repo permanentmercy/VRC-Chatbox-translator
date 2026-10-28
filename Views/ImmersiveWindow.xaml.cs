@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using VrcChatboxDemo.Services;
+using VrcChatboxDemo.Views.Shared;
 using Windows.System;
 using Windows.UI.Core;
 

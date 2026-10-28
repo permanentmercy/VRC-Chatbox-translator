@@ -9,7 +9,9 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using VrcChatboxDemo.Services;
+using VrcChatboxDemo.Services.Platform;
 using VrcChatboxDemo.Views;
+using VrcChatboxDemo.Views.Shared;
 
 namespace VrcChatboxDemo;
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using VrcChatboxDemo.Services.Configuration;
 
 namespace VrcChatboxDemo.Services.Translation;
 

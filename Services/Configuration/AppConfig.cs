@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace VrcChatboxDemo.Services;
+namespace VrcChatboxDemo.Services.Configuration;
 
 /// <summary>
 /// 应用程序全局配置模型，用于序列化并持久化存储至 config.json
