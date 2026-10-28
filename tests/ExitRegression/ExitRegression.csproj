@@ -6,13 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="Microsoft.CodeAnalysis">
-      <HintPath>$(MSBuildBinPath)/Roslyn/bincore/Microsoft.CodeAnalysis.dll</HintPath>
-      <Private>true</Private>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.CSharp">
-      <HintPath>$(MSBuildBinPath)/Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll</HintPath>
-      <Private>true</Private>
-    </Reference>
+    <!-- 退出编排已抽成真实类：直接编译。终止动作由构造参数注入，绝不真正结束进程。 -->
+    <Compile Include="..\..\Services\Lifecycle\ShutdownCoordinator.cs" Link="Production\ShutdownCoordinator.cs" />
   </ItemGroup>
 </Project>

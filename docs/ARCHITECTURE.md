@@ -42,7 +42,8 @@
 | `SettingsService.Speech.cs`（681 行） | `Core/Speech/SubtitlePipeline` + `SpeechCoordinator` | ✅ 已完成（681 → 495） |
 | 引擎启停/切换状态机 | `Core/Speech/SpeechEngineCoordinator` + 两个 `ISpeechEngineControl` 适配器 | ✅ 已完成 |
 | `SettingsService.Speech.cs` 里的翻译档位与语言解析 | `Core/Translation/TranslationPolicy`（纯策略） | ✅ 已完成 |
-| `SettingsService.Lifecycle.cs`（184 行） | `App/ShutdownCoordinator` | ⏳ 待做 |
+| `SettingsService.Lifecycle.cs`（184 行） | `Core/Lifecycle/ShutdownCoordinator`（编排）+ 门面实现上下文 | ✅ 已完成 |
+| `SettingsService.Lifecycle.cs` 里的设备切换与热键注册 | `SettingsService.Apply.cs` | ✅ 已完成 |
 | `SettingsService.cs`（1,269 行，属性与日志） | 保留为**门面**（供 UI 绑定），内部委托给上面各模块 | ⏳ 待做 |
 | `TtsService.cs`（1,803 行） | `Core/Synthesis/TtsServerProcess` + `TtsStreamClient` + `TtsPlaybackEngine`，`TtsService` 变门面 | 🚧 目录扫描与播放 Provider 已完成（1,803 → 1,474），进程/HTTP/播放引擎待拆 |
 | `TtsService` 里的权重与音色扫描 | `Core/Synthesis/TtsCatalog`（无状态、显式传入脚本路径） | ✅ 已完成 |
