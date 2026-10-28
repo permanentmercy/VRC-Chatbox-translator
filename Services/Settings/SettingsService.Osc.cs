@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using VrcChatboxDemo.Services.Text;
 
 namespace VrcChatboxDemo.Services;
 
@@ -85,7 +86,7 @@ public partial class SettingsService
                     // 常驻模板接管时不写草稿预览；否则立即更新游戏内头顶气泡（逐字上屏，静音）
                     if (!templateManaged)
                     {
-                        string textToSend = System.Text.RegularExpressions.Regex.Replace(rawText ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        string textToSend = ChatTextNormalizer.ExpandExplicitNewlines(rawText);
                         await OscService.SendChatboxMessageAsync(textToSend, direct: true, playSound: false, recordLog: false);
                         _lastOscSendTime = DateTime.UtcNow;
                     }
@@ -162,23 +163,8 @@ public partial class SettingsService
         _ = OscService.SendTypingAsync(false, recordLog: false);
     }
 
-    /// <summary>
-    /// VRChat chatbox 单条上限 144 字符。直接 Substring 可能把代理对（emoji）
-    /// 从中间切开，产生半个字符导致气泡显示乱码；这里避免切断代理对。
-    /// </summary>
-    private const int MaxChatboxChars = 144;
-
-    private static string TruncateForChatbox(string text)
-    {
-        if (string.IsNullOrEmpty(text) || text.Length <= MaxChatboxChars) return text;
-
-        int cut = MaxChatboxChars;
-        if (char.IsHighSurrogate(text[cut - 1]))
-        {
-            cut--;
-        }
-        return text.Substring(0, cut);
-    }
+    /// <summary>兼容旧调用点：144 字符截断规则已移入 <see cref="ChatTextNormalizer"/>。</summary>
+    private static string TruncateForChatbox(string text) => ChatTextNormalizer.TruncateForChatbox(text);
 
     /// <summary>
     /// 用户确认发送消息或语音识别/翻译定稿直接发送，停止打字动画并播放提示音，带速率防抖与发送互斥保底
@@ -217,12 +203,9 @@ public partial class SettingsService
                     await Task.Delay(Math.Max(0, (int)(110 - elapsed)));
                 }
 
-                // 发送最终确认消息（包含声音配置并计入日志，确保任何显式换行标记解析为真实换行）
-                string finalMsg = System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-                // VRChat chatbox 单条上限 144 字符；输入框只把超限标红但不阻止发送，
-                // 这里统一截断（不切断 emoji 代理对），避免超长文本被静默丢弃或显示乱码。
-                finalMsg = TruncateForChatbox(finalMsg);
+                // 发送最终确认消息（包含声音配置并计入日志）。
+                // 显式换行展开 + 144 字符截断统一走 ChatTextNormalizer，避免三处各写一份正则。
+                string finalMsg = ChatTextNormalizer.PrepareForChatbox(text);
 
                 // 常驻模板接管发送消息时，不再独立直发：
                 // 只更新 {sent_text}，由模板统一渲染、限流并维持气泡。
@@ -293,8 +276,7 @@ public partial class SettingsService
     public async Task<bool> SendMessageAsync(string text)
     {
         PersistentTextService.NotifyUserSentMessage();
-        string finalMsg = System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\{(\\n|newline|换行)\}|\\n", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        finalMsg = TruncateForChatbox(finalMsg);
+        string finalMsg = ChatTextNormalizer.PrepareForChatbox(text);
         return await OscService.SendChatboxMessageAsync(finalMsg, IsDirectSendEnabled, IsSoundEnabled);
     }
 
@@ -309,44 +291,6 @@ public partial class SettingsService
         AddLog(item.Address, item.Content, item.Success, item.Error);
     }
 
-    /// <summary>
-    /// 对待发送给 TTS 的文本进行声学与标点规范化清洗
-    /// 1. 消除显式换行符与多余空白，换行转为逗号短暂停顿
-    /// 2. 过滤常见控制符、特殊符号与 VRChat 格式化标签（如 <color=...> 等）
-    /// 3. 若末尾缺乏终止标点，自动补齐句号，防止自回归 TTS 模型因缺失结束标记而在末尾产生电音、杂音或词尾拉长
-    /// </summary>
-    public static string PrepareTextForTts(string input)
-    {
-        if (string.IsNullOrWhiteSpace(input)) return string.Empty;
-
-        // 移除 VRChat 富文本标签如 <color=#ff0000>、<b>、</i> 等
-        string text = System.Text.RegularExpressions.Regex.Replace(input, @"<[^>]+>", "");
-
-        // 换行替换为逗号，使其在 TTS 中呈现自然语义停顿，而非断音或音素崩塌
-        text = text.Replace("\r\n", "，").Replace("\r", "，").Replace("\n", "，");
-
-        // 移除控制字符
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "");
-
-        // 规范化连续空白
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
-
-        if (string.IsNullOrEmpty(text)) return string.Empty;
-
-        // 检查末尾标点。若没有句号、问号、感叹号等终止符，自动根据末尾字符类型补齐标点
-        char last = text[^1];
-        if (last != '。' && last != '！' && last != '？' && last != '.' && last != '!' && last != '?' && last != '…' && last != '~')
-        {
-            if ((last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') || (last >= '0' && last <= '9'))
-            {
-                text += ".";
-            }
-            else
-            {
-                text += "。";
-            }
-        }
-
-        return text;
-    }
+    /// <summary>兼容旧调用点：声学清洗规则已移入 <see cref="ChatTextNormalizer"/>。</summary>
+    public static string PrepareTextForTts(string input) => ChatTextNormalizer.PrepareForTts(input);
 }
