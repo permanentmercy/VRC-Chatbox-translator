@@ -7,7 +7,10 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 // process-start/kill members are excluded and replaced by a rejecting safety stub.
 string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
 string tests = Path.Combine(root, "tests/TtsDeepRegression");
-var serviceTree = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "Services/Tts/TtsService.cs")));
+var serviceTrees = Directory.GetFiles(Path.Combine(root, "Services/Tts"), "TtsService*.cs")
+    .OrderBy(path => path, StringComparer.Ordinal)
+    .Select(path => CSharpSyntaxTree.ParseText(File.ReadAllText(path)))
+    .ToArray();
 var methods = new HashSet<string> {
     "SetState", "IsModelRegistered", "GetPlaybackDevices", "IsVirtualAudioDevice",
     "CheckHealthAsync", "CheckHealthCoreAsync", "RefreshHealthAsync", "StopManagedServer", "BeginSynthesis",
@@ -15,14 +18,17 @@ var methods = new HashSet<string> {
     "FindFirstVirtualAudioDevice", "ResolveDevices", "DisposeDevices", "PlayStreamAsync",
     "MatchDeviceChannelCount", "BeginPlayback", "EndPlayback", "StopPlayback", "Dispose"
 };
-var service = serviceTree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
-    .Single(x => x.Identifier.Text == "TtsService");
-var members = service.Members.Where(m => m switch {
-    FieldDeclarationSyntax or EventFieldDeclarationSyntax or PropertyDeclarationSyntax or ConstructorDeclarationSyntax => true,
-    MethodDeclarationSyntax x => methods.Contains(x.Identifier.Text) &&
-        (x.Identifier.Text != "PlayStreamAsync" || x.ParameterList.Parameters[0].Type!.ToString() == "string"),
-    _ => false
-});
+// TtsService 现在是分部类：设备部分在 TtsService.Devices.cs，成员需要跨文件合并。
+var members = serviceTrees
+    .SelectMany(tree => tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>())
+    .Where(c => c.Identifier.Text == "TtsService")
+    .SelectMany(c => c.Members)
+    .Where(m => m switch {
+        FieldDeclarationSyntax or EventFieldDeclarationSyntax or PropertyDeclarationSyntax or ConstructorDeclarationSyntax => true,
+        MethodDeclarationSyntax x => methods.Contains(x.Identifier.Text) &&
+            (x.Identifier.Text != "PlayStreamAsync" || x.ParameterList.Parameters[0].Type!.ToString() == "string"),
+        _ => false
+    });
 string production = """
 using System;
 using System.Collections.Concurrent;
