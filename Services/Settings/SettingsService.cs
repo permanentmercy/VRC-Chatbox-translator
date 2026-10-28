@@ -30,7 +30,8 @@ public partial class SettingsService
     public HotkeyService HotkeyService { get; } = new();
     public SpeechService SpeechService { get; } = new();
     public LiveCaptionsService LiveCaptionsService { get; } = new();
-    public LiveCaptionsLanguageAutoSwitcher LiveCaptionsAutoSwitcher { get; }
+    // 由 ComposeLiveCaptionsAutoSwitcher 在装配阶段赋值
+    public LiveCaptionsLanguageAutoSwitcher LiveCaptionsAutoSwitcher { get; private set; } = null!;
     public OllamaService OllamaService { get; } = new();
     public InboundService InboundService { get; } = new();
     public PersistentTextService PersistentTextService { get; } = new();
@@ -100,214 +101,17 @@ public partial class SettingsService
 
         LoadConfig();
 
-        // 字幕管线的显示事件转发给界面订阅者（UI 只认 SettingsService 的公开事件）
-        _subtitle.RecognizedUpdated += text => SpeechRecognizedUpdated?.Invoke(text);
-        _subtitle.HypothesisUpdated += text => SpeechHypothesisUpdated?.Invoke(text);
-        _subtitle.TranslationUpdated += (text, latency) => TranslationUpdated?.Invoke(text, latency);
-        _subtitle.DisplayChanged += () => DisplaySettingsChanged?.Invoke();
-
-        LiveCaptionsAutoSwitcher = new LiveCaptionsLanguageAutoSwitcher(LiveCaptionsService, this);
-        if (Config.LiveCaptionsAutoDetectLanguage)
-        {
-            _ = LiveCaptionsAutoSwitcher.SetEnabledAsync(true, Config.LiveCaptionsAutoDetectIntervalSeconds);
-        }
-
-        OscService.MessageSent += OnMessageSent;
-
-        InboundService.VariableService = VariableService;
-        InboundService.PersistentTextService = PersistentTextService;
-
-        VariableService.VariableUpdated += (varName, val) =>
-        {
-            _ = PersistentTextService.OnVariableUpdatedAsync(varName, VariableService, OscService);
-        };
-
-        VrcInGameGuard.InGameMessageSent += () =>
-        {
-            PersistentTextService.NotifyInGameMessageSent();
-        };
-        VrcInGameGuard.InGameTyping += () =>
-        {
-            PersistentTextService.NotifyInGameTyping();
-        };
-        VrcInGameGuard.IsEnabled = Config.InGameAvoidanceEnabled;
-        PersistentTextService.EnableInGameAvoidance = Config.InGameAvoidanceEnabled;
-        PersistentTextService.AvoidanceSeconds = Config.InGameAvoidanceSeconds;
-        PersistentTextService.TransientDurationSeconds = Config.TransientTextDurationSeconds;
-        VrcInGameGuard.Start();
-
-        InboundService.MessageReceived += (text, source) =>
-        {
-            if (string.IsNullOrWhiteSpace(text)) return;
-            if (text.StartsWith("/avatar/", StringComparison.OrdinalIgnoreCase) ||
-                text.StartsWith("/tracking/", StringComparison.OrdinalIgnoreCase) ||
-                text.StartsWith("/input/", StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            AddLog($"API Inbound ({source})", text, true);
-            if (InboundService.AutoSendToVrc)
-            {
-                _ = FinalizeSendAsync(text);
-            }
-            else
-            {
-                TriggerAutoFill(text);
-            }
-        };
-
-        try
-        {
-            if (Config.InboundEnabled)
-            {
-                InboundService.Start(Config.InboundHttpPort, Config.InboundOscPort);
-            }
-        }
-        catch { }
-
-        HotkeyService.ImmersiveHotkeyPressed += () =>
-        {
-            if (App.DispatcherQueueInstance != null)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(ToggleImmersiveMode);
-            }
-            else
-            {
-                ToggleImmersiveMode();
-            }
-        };
-
-        SpeechService.SpeechRecognized += text =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() => OnSpeechRecognized(text));
-            }
-            else
-            {
-                OnSpeechRecognized(text);
-            }
-        };
-
-        SpeechService.SpeechHypothesis += interimText =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() => OnSpeechHypothesis(interimText));
-            }
-            else
-            {
-                OnSpeechHypothesis(interimText);
-            }
-        };
-
-        SpeechService.StatusChanged += status =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() =>
-                {
-                    SpeechStatus = status;
-                    SpeechStatusUpdated?.Invoke(status);
-                });
-            }
-            else
-            {
-                SpeechStatus = status;
-                SpeechStatusUpdated?.Invoke(status);
-            }
-        };
-
-        SpeechService.ErrorOccurred += err =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() =>
-                {
-                    SpeechStatus = err;
-                    AddLog("Speech", err, false);
-                    SpeechStatusUpdated?.Invoke(err);
-                });
-            }
-            else
-            {
-                SpeechStatus = err;
-                AddLog("Speech", err, false);
-                SpeechStatusUpdated?.Invoke(err);
-            }
-        };
-
-        SpeechService.ListeningStateChanged += listening => SpeechEngines.OnEngineRunningChanged("Whisper", listening);
-
-        LiveCaptionsService.SpeechHypothesis += interimText =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() => OnSpeechHypothesis(interimText));
-            }
-            else
-            {
-                OnSpeechHypothesis(interimText);
-            }
-        };
-
-        LiveCaptionsService.SpeechRecognized += text =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() => OnSpeechRecognized(text));
-            }
-            else
-            {
-                OnSpeechRecognized(text);
-            }
-        };
-
-        LiveCaptionsService.StatusChanged += status =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() =>
-                {
-                    SpeechStatus = status;
-                    SpeechStatusUpdated?.Invoke(status);
-                });
-            }
-            else
-            {
-                SpeechStatus = status;
-                SpeechStatusUpdated?.Invoke(status);
-            }
-        };
-
-        LiveCaptionsService.ErrorOccurred += err =>
-        {
-            if (App.DispatcherQueueInstance != null && !App.DispatcherQueueInstance.HasThreadAccess)
-            {
-                App.DispatcherQueueInstance.TryEnqueue(() =>
-                {
-                    SpeechStatus = err;
-                    AddLog("LiveCaptions", err, false);
-                    SpeechStatusUpdated?.Invoke(err);
-                });
-            }
-            else
-            {
-                SpeechStatus = err;
-                AddLog("LiveCaptions", err, false);
-                SpeechStatusUpdated?.Invoke(err);
-            }
-        };
-
-        LiveCaptionsService.RunningStateChanged += running => SpeechEngines.OnEngineRunningChanged("LiveCaptions", running);
-
-        PersistentTextService.IsEnabled = Config.IsPersistentTextEnabled;
-        PersistentTextService.CustomText = Config.PersistentCustomText;
-        if (Config.IsPersistentTextEnabled && !string.IsNullOrWhiteSpace(Config.PersistentCustomText))
-        {
-            PersistentTextService.RestartLoop(VariableService, OscService);
-        }
+        // 装配清单（实现在 SettingsService.Composition.cs，顺序即启动顺序）
+        ComposeSubtitleEvents();
+        ComposeLiveCaptionsAutoSwitcher();
+        ComposeOscLogging();
+        ComposeInboundServices();
+        ComposeInGameGuard();
+        ComposeInboundMessaging();
+        ComposeHotkeys();
+        ComposeSpeechEvents();
+        ComposeLiveCaptionsEvents();
+        ComposePersistentText();
 
         UpdateLanguageVariable();
     }

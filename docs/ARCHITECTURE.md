@@ -44,7 +44,8 @@
 | `SettingsService.Speech.cs` 里的翻译档位与语言解析 | `Core/Translation/TranslationPolicy`（纯策略） | ✅ 已完成 |
 | `SettingsService.Lifecycle.cs`（184 行） | `Core/Lifecycle/ShutdownCoordinator`（编排）+ 门面实现上下文 | ✅ 已完成 |
 | `SettingsService.Lifecycle.cs` 里的设备切换与热键注册 | `SettingsService.Apply.cs` | ✅ 已完成 |
-| `SettingsService.cs`（1,269 行，属性与日志） | 保留为**门面**（供 UI 绑定），内部委托给上面各模块 | ⏳ 待做 |
+| `SettingsService.cs`（1,269 行，属性与日志） | 拆成 10 个分部文件，主文件收敛为 207 行的门面（单例/字段/状态/事件/装配清单） | ✅ 已完成 |
+| 构造函数里 200 行事件接线 | `SettingsService.Composition.cs`（组合根：每个 Compose* 一个子系统，顺序即启动顺序） | ✅ 已完成 |
 | `TtsService.cs`（1,803 行） | `Core/Synthesis/TtsServerProcess` + `TtsStreamClient` + `TtsPlaybackEngine`，`TtsService` 变门面 | 🚧 目录扫描与播放 Provider 已完成（1,803 → 1,474），进程/HTTP/播放引擎待拆 |
 | `TtsService` 里的权重与音色扫描 | `Core/Synthesis/TtsCatalog`（无状态、显式传入脚本路径） | ✅ 已完成 |
 | `TtsService` 末尾的播放 Provider | `Core/Synthesis/PlaybackProviders`（软限幅 + 无界流式队列） | ✅ 已完成 |
