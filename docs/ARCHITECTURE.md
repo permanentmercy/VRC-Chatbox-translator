@@ -40,6 +40,7 @@
 | `SettingsService.Osc.cs` 里的打字状态机 | `Core/Messaging/TypingIndicator`（120ms 防抖 / 1.5s 心跳 / 最终发送互斥） | ✅ 已完成 |
 | `SettingsService.Osc.cs`（296 → 200 行） | 保留发送门面：互斥、110ms 保底间隔、朗读/翻译分派 | ✅ 已完成 |
 | `SettingsService.Speech.cs`（681 行） | `Core/Speech/SubtitlePipeline` + `SpeechCoordinator` | ⏳ 待做 |
+| `SettingsService.Speech.cs` 里的翻译档位与语言解析 | `Core/Translation/TranslationPolicy`（纯策略） | ✅ 已完成 |
 | `SettingsService.Lifecycle.cs`（184 行） | `App/ShutdownCoordinator` | ⏳ 待做 |
 | `SettingsService.cs`（1,269 行，属性与日志） | 保留为**门面**（供 UI 绑定），内部委托给上面各模块 | ⏳ 待做 |
 | `TtsService.cs`（1,803 行） | `Core/Synthesis/TtsServerProcess` + `TtsStreamClient` + `TtsPlaybackEngine`，`TtsService` 变门面 | ⏳ 待做 |

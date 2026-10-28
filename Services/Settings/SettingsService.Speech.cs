@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using VrcChatboxDemo.Services.Translation;
 
 namespace VrcChatboxDemo.Services;
 
@@ -122,16 +123,17 @@ public partial class SettingsService
     // 「定稿句」的翻译不经过这里，永远只发一次，不受档位影响。
     // ======================================================================
 
+    // 档位表与解析逻辑已移入 Core：TranslationPolicy（纯策略，可独立测试）。
+    // 这里保留同名成员做兼容转发，UI 无需改动。
+
+    /// <summary>兼容转发：档位定义见 <see cref="TranslationPolicy.FrequencyOptions"/>。</summary>
     public readonly record struct RequestFrequencyOption(
         string Mode, string Label, int IntervalMs, int MinNewChars);
 
-    /// <summary>默认档位。0.8 秒 / 3 字，与加入本设置之前写死的节流参数完全一致。</summary>
+    /// <summary>兼容转发：默认档位。</summary>
     public const string DefaultRequestFrequencyMode = AppConfig.DefaultRequestFrequencyMode;
 
-    /// <summary>
-    /// 可选档位。IntervalMs &lt;= 0 表示关闭假说预翻译。
-    /// 顺序即下拉框的显示顺序。
-    /// </summary>
+    /// <summary>兼容转发：可选档位表。</summary>
     public static readonly IReadOnlyList<RequestFrequencyOption> RequestFrequencyOptions = new[]
     {
         new RequestFrequencyOption("Off",    "关闭（只翻译定稿句，最省资源）", 0,    int.MaxValue),
@@ -141,25 +143,13 @@ public partial class SettingsService
         new RequestFrequencyOption("Ultra",  "高频（0.2 秒 / 次，最跟手）",    200,  1),
     };
 
-    /// <summary>
-    /// 把配置里的档位字符串解析成具体参数；无法识别时回退到「标准」。
-    /// </summary>
+    /// <summary>兼容转发：解析档位字符串，无法识别时回退到默认档位。</summary>
     public static RequestFrequencyOption ResolveRequestFrequency(string? mode)
     {
-        if (!string.IsNullOrWhiteSpace(mode))
+        var resolved = TranslationPolicy.ResolveFrequency(mode);
+        foreach (var option in RequestFrequencyOptions)
         {
-            foreach (var opt in RequestFrequencyOptions)
-            {
-                if (string.Equals(opt.Mode, mode, StringComparison.OrdinalIgnoreCase))
-                {
-                    return opt;
-                }
-            }
-        }
-        // 按名字回退到「标准」，而不是写死下标，免得以后调整档位顺序时踩坑
-        foreach (var opt in RequestFrequencyOptions)
-        {
-            if (opt.Mode == DefaultRequestFrequencyMode) return opt;
+            if (string.Equals(option.Mode, resolved.Mode, StringComparison.OrdinalIgnoreCase)) return option;
         }
         return RequestFrequencyOptions[0];
     }
@@ -555,19 +545,9 @@ public partial class SettingsService
         return lastCut;
     }
 
-    private static string ParseTargetLanguage(string? targetLanguage)
-    {
-        if (string.IsNullOrWhiteSpace(targetLanguage)) return "English";
-        string lower = targetLanguage.ToLowerInvariant();
-        if (lower.Contains("日") || lower.Contains("japan")) return "Japanese";
-        if (lower.Contains("中") || lower.Contains("chinese")) return "Chinese";
-        if (lower.Contains("韩") || lower.Contains("korean")) return "Korean";
-        if (lower.Contains("俄") || lower.Contains("russian")) return "Russian";
-        if (lower.Contains("法") || lower.Contains("french")) return "French";
-        if (lower.Contains("德") || lower.Contains("german")) return "German";
-        if (lower.Contains("西") || lower.Contains("spanish")) return "Spanish";
-        return "English";
-    }
+    /// <summary>兼容转发：目标语言归一化规则见 <see cref="TranslationPolicy.ParseTargetLanguage"/>。</summary>
+    private static string ParseTargetLanguage(string? targetLanguage) =>
+        TranslationPolicy.ParseTargetLanguage(targetLanguage);
 
     public async Task<string> TestTranscribeFileAsync(string? filePath = null)
     {
