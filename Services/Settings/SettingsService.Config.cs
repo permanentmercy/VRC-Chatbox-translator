@@ -1,131 +1,81 @@
 using System;
-using System.IO;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using System.Threading;
+using VrcChatboxDemo.Services.Configuration;
 
 namespace VrcChatboxDemo.Services;
 
+/// <summary>
+/// 配置门面：保留 UI 与旧调用点使用的成员名，实际持久化委托给 <see cref="ConfigStore"/>。
+///
+/// 这里只剩两类逻辑：
+/// 1. 把运行时状态（当前识别偏好、Inbound 端口等）同步进配置模型；
+/// 2. 加载后把配置应用到各服务。
+/// 文件定位、序列化、防抖与旧字段迁移都属于 <see cref="ConfigStore"/>。
+/// </summary>
 public partial class SettingsService
 {
-    public static readonly string ConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+    public static readonly string ConfigPath = ConfigStore.ConfigPath;
 
-    private readonly object _saveLock = new();
-    private Timer? _saveDebounceTimer;
+    private readonly ConfigStore _configStore = new();
+
+    /// <summary>把运行时状态写回配置模型（保存前调用，保证落盘内容与当前实际一致）。</summary>
+    private void SyncRuntimeStateToConfig()
+    {
+        Config.ChineseVariant = SpeechService.ChineseVariant;
+        Config.SpeechSliceDurationSeconds = SpeechService.SliceDurationSeconds;
+        Config.GpuUsageMode = SpeechService.PerformanceMode.ToString();
+        // 注意：不要用 SpeechService.CurrentModelType 覆盖 Config.SpeechModelType。
+        // 前者是“已加载完成”的模型，后者是“用户选择的模型”；切换/下载未完成时
+        // 任何一次自动保存都会把磁盘上的选择改回旧模型。
+        Config.InboundHttpPort = InboundService.HttpPort;
+        Config.InboundOscPort = InboundService.OscPort;
+        Config.InboundAutoSendToVrc = InboundService.AutoSendToVrc;
+    }
 
     public void SaveConfigDebounced(int delayMs = 300)
     {
-        lock (_saveLock)
+        _configStore.SaveDebounced(() =>
         {
-            _saveDebounceTimer?.Dispose();
-            _saveDebounceTimer = new Timer(_ =>
-            {
-                SaveConfigImmediately();
-            }, null, delayMs, Timeout.Infinite);
-        }
-    }
-
-    private static string? GetDevSourceConfigPath()
-    {
-        try
-        {
-            string devDir = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\.."));
-            if (Directory.Exists(Path.Combine(devDir, "Services")))
-            {
-                return Path.Combine(devDir, "config.json");
-            }
-        }
-        catch { }
-        return null;
+            SyncRuntimeStateToConfig();
+            return Config;
+        }, delayMs);
     }
 
     public void SaveConfigImmediately()
     {
-        lock (_saveLock)
-        {
-            _saveDebounceTimer?.Dispose();
-            _saveDebounceTimer = null;
-
-            try
-            {
-                Config.ChineseVariant = SpeechService.ChineseVariant;
-                Config.SpeechSliceDurationSeconds = SpeechService.SliceDurationSeconds;
-                Config.GpuUsageMode = SpeechService.PerformanceMode.ToString();
-                // 不要用 SpeechService.CurrentModelType 覆盖 Config.SpeechModelType：
-                // 前者是“已加载完成”的模型，后者是“用户选择的模型”。切换/下载尚未完成时
-                // （例如 tiny→base 正在下载权重）任何一次自动保存都会把磁盘上的选择改回旧模型，
-                // 下次启动就丢掉了用户的选择。选择值由 SpeechModelType setter 维护。
-                Config.InboundHttpPort = InboundService.HttpPort;
-                Config.InboundOscPort = InboundService.OscPort;
-                Config.InboundAutoSendToVrc = InboundService.AutoSendToVrc;
-
-                var options = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-                };
-
-                string json = JsonSerializer.Serialize(Config, options);
-                File.WriteAllText(ConfigPath, json);
-
-                // 若处于开发源码目录环境，同步镜像保存到项目根目录
-                string? devPath = GetDevSourceConfigPath();
-                if (!string.IsNullOrEmpty(devPath) && !string.Equals(devPath, ConfigPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    try { File.WriteAllText(devPath, json); } catch { }
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Config] Save failed: {ex.Message}");
-            }
-        }
+        SyncRuntimeStateToConfig();
+        _configStore.Save(Config);
     }
 
     public void LoadConfig()
     {
-        try
+        switch (_configStore.Load(out var loaded))
         {
-            string? pathToLoad = null;
-            if (File.Exists(ConfigPath))
-            {
-                pathToLoad = ConfigPath;
-            }
-            else
-            {
-                string? devPath = GetDevSourceConfigPath();
-                if (!string.IsNullOrEmpty(devPath) && File.Exists(devPath))
+            case ConfigStore.LoadOutcome.Loaded when loaded != null:
+                Config = loaded;
+                if (ConfigStore.MigrateLegacyPaths(Config))
                 {
-                    pathToLoad = devPath;
+                    SaveConfigImmediately();
                 }
-            }
+                break;
 
-            if (!string.IsNullOrEmpty(pathToLoad))
-            {
-                string json = File.ReadAllText(pathToLoad);
-                var loaded = JsonSerializer.Deserialize<AppConfig>(json);
-                if (loaded != null)
-                {
-                    Config = loaded;
-                    if (MigrateLegacyTtsPaths(Config))
-                    {
-                        SaveConfigImmediately();
-                    }
-                }
-            }
-            else
-            {
+            case ConfigStore.LoadOutcome.Missing:
+                // 首次运行：落一份默认配置，用户下次启动就有文件可改。
                 Config = new AppConfig();
                 SaveConfigImmediately();
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[Config] Load failed: {ex.Message}");
-            Config = new AppConfig();
+                break;
+
+            case ConfigStore.LoadOutcome.Corrupted:
+                // 文件损坏时不覆盖它（用户可能还想手工抢救），只以默认值启动。
+                Config = new AppConfig();
+                break;
         }
 
-        // 应用各服务初态
+        ApplyConfigToServices();
+    }
+
+    /// <summary>把配置应用到各服务初态。加载完成与「恢复默认」之后都要走一遍。</summary>
+    private void ApplyConfigToServices()
+    {
         OscService.Host = Config.Host;
         OscService.Port = Config.Port;
         SpeechService.ChineseVariant = Config.ChineseVariant;
@@ -145,60 +95,6 @@ public partial class SettingsService
         }
     }
 
-    /// <summary>
-    /// 自动将旧版 Index_TTS 路径迁移至全新的 indextts 仓库与 Conda 环境
-    /// </summary>
-    public static bool MigrateLegacyTtsPaths(AppConfig cfg)
-    {
-        bool changed = false;
-
-        // 目标脚本路径: indextts\tts_server.py
-        string defaultScript = @"H:\program\chatbox\indextts\tts_server.py";
-        string? resolvedScript = null;
-        if (File.Exists(defaultScript))
-        {
-            resolvedScript = defaultScript;
-        }
-        else
-        {
-            try
-            {
-                string candidate = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\..\..\indextts\tts_server.py"));
-                if (File.Exists(candidate)) resolvedScript = candidate;
-            }
-            catch { }
-        }
-
-        if (!string.IsNullOrEmpty(resolvedScript))
-        {
-            if (string.IsNullOrWhiteSpace(cfg.TtsServerScriptPath) ||
-                cfg.TtsServerScriptPath.Contains("Index_TTS", StringComparison.OrdinalIgnoreCase) ||
-                !File.Exists(cfg.TtsServerScriptPath))
-            {
-                if (!string.Equals(cfg.TtsServerScriptPath, resolvedScript, StringComparison.OrdinalIgnoreCase))
-                {
-                    cfg.TtsServerScriptPath = resolvedScript;
-                    changed = true;
-                }
-            }
-        }
-
-        // 目标 Python 解释器: Conda indextts 环境
-        string defaultPython = @"D:\software\conda\envs\indextts\python.exe";
-        if (string.IsNullOrWhiteSpace(cfg.TtsPythonExePath) ||
-            cfg.TtsPythonExePath.Contains("Index_TTS", StringComparison.OrdinalIgnoreCase) ||
-            !File.Exists(cfg.TtsPythonExePath))
-        {
-            if (File.Exists(defaultPython))
-            {
-                if (!string.Equals(cfg.TtsPythonExePath, defaultPython, StringComparison.OrdinalIgnoreCase))
-                {
-                    cfg.TtsPythonExePath = defaultPython;
-                    changed = true;
-                }
-            }
-        }
-
-        return changed;
-    }
+    /// <summary>兼容旧调用点：迁移逻辑已移入 <see cref="ConfigStore"/>。</summary>
+    public static bool MigrateLegacyTtsPaths(AppConfig cfg) => ConfigStore.MigrateLegacyPaths(cfg);
 }

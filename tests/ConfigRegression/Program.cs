@@ -1,129 +1,158 @@
-using System.Reflection;
 using System.Text.Json;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using VrcChatboxDemo.Services;
+using VrcChatboxDemo.Services.Configuration;
 
-// 提取生产 SaveConfigImmediately 方法体，用桩服务验证“落盘内容代表用户意图而不是当前已加载状态”。
-string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
-string Select(string relativePath, params string[] names)
+// ConfigStore 回归：直接实例化生产类，验证持久化语义（不再解析源码文本）。
+// 覆盖：缺文件/损坏文件/正常加载的区分、防抖保存取最新快照、立即保存取消挂起的防抖、
+// 旧版绝对路径迁移、默认值不再绑定某台机器。
+int passed = 0;
+var failures = new List<string>();
+void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
+void Case(string name, Func<Task> body)
 {
-    var wanted = names.ToHashSet(StringComparer.Ordinal);
-    var tree = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, relativePath)));
-    var members = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
-        .Where(c => c.Identifier.Text == "SettingsService")
-        .SelectMany(c => c.Members).Where(m => m switch
+    try { body().GetAwaiter().GetResult(); passed++; Console.WriteLine("PASS " + name); }
+    catch (Exception ex) { failures.Add(name + ": " + ex.Message); Console.WriteLine("FAIL " + name + ": " + ex.Message); }
+}
+
+// ConfigStore.ConfigPath 固定指向程序目录，测试直接操作该文件，结束时还原用户真实配置。
+string configPath = ConfigStore.ConfigPath;
+string? backup = File.Exists(configPath) ? File.ReadAllText(configPath) : null;
+void ResetConfigFile()
+{
+    if (File.Exists(configPath)) File.Delete(configPath);
+}
+
+try
+{
+    Case("missing file reports Missing", () =>
+    {
+        ResetConfigFile();
+        using var store = new ConfigStore();
+        var outcome = store.Load(out var cfg);
+        Check(outcome == ConfigStore.LoadOutcome.Missing, "outcome=" + outcome);
+        Check(cfg == null, "config should be null when missing");
+        return Task.CompletedTask;
+    });
+
+    Case("corrupted file reports Corrupted and keeps the file", () =>
+    {
+        ResetConfigFile();
+        File.WriteAllText(configPath, "{ this is not json");
+        using var store = new ConfigStore();
+        var outcome = store.Load(out var cfg);
+        Check(outcome == ConfigStore.LoadOutcome.Corrupted, "outcome=" + outcome);
+        Check(cfg == null, "config should be null when corrupted");
+        Check(File.Exists(configPath), "corrupted file must not be deleted by Load");
+        return Task.CompletedTask;
+    });
+
+    Case("save then load round-trips values", () =>
+    {
+        ResetConfigFile();
+        using var store = new ConfigStore();
+        store.Save(new AppConfig { WindowWidth = 1234, OllamaModel = "custom:1b", InboundHttpPort = 9123 });
+
+        using var reader = new ConfigStore();
+        Check(reader.Load(out var loaded) == ConfigStore.LoadOutcome.Loaded, "load failed");
+        Check(loaded!.WindowWidth == 1234 && loaded.OllamaModel == "custom:1b" && loaded.InboundHttpPort == 9123,
+            "round-trip mismatch");
+        return Task.CompletedTask;
+    });
+
+    Case("debounced save persists the latest snapshot, not the scheduled one", () =>
+    {
+        ResetConfigFile();
+        using var store = new ConfigStore();
+        var cfg = new AppConfig { OllamaModel = "first" };
+        store.SaveDebounced(() => cfg, 120);
+        cfg.OllamaModel = "second";
+        Thread.Sleep(400);
+
+        using var reader = new ConfigStore();
+        reader.Load(out var loaded);
+        Check(loaded?.OllamaModel == "second", "persisted=" + loaded?.OllamaModel);
+        return Task.CompletedTask;
+    });
+
+    Case("immediate save cancels a pending debounced save", () =>
+    {
+        ResetConfigFile();
+        using var store = new ConfigStore();
+        var cfg = new AppConfig { OllamaModel = "debounced" };
+        store.SaveDebounced(() => cfg, 250);
+        cfg.OllamaModel = "immediate";
+        store.Save(cfg);
+        Thread.Sleep(450);
+
+        using var reader = new ConfigStore();
+        reader.Load(out var loaded);
+        Check(loaded?.OllamaModel == "immediate", "persisted=" + loaded?.OllamaModel);
+        return Task.CompletedTask;
+    });
+
+    Case("migrate clears machine-specific absolute paths", () =>
+    {
+        var cfg = new AppConfig
         {
-            MethodDeclarationSyntax method => wanted.Contains(method.Identifier.Text),
-            PropertyDeclarationSyntax property => wanted.Contains(property.Identifier.Text),
-            FieldDeclarationSyntax field => field.Declaration.Variables.Any(v => wanted.Contains(v.Identifier.Text)),
-            _ => false
-        }).ToArray();
-    if (members.Length != wanted.Count)
-        throw new InvalidOperationException($"Production extraction failed: {relativePath}: expected {wanted.Count}, got {members.Length}");
-    return string.Join(Environment.NewLine, members.Select(m => m.ToFullString()));
+            TtsServerScriptPath = @"Z:\does-not-exist\indextts\tts_server.py",
+            TtsPythonExePath = @"Z:\does-not-exist\python.exe"
+        };
+        bool changed = ConfigStore.MigrateLegacyPaths(cfg);
+        Check(changed, "migration should report a change for dead paths");
+        Check(!cfg.TtsServerScriptPath.Contains(@"Z:\does-not-exist"), "dead script path kept: " + cfg.TtsServerScriptPath);
+        Check(!cfg.TtsPythonExePath.Contains(@"Z:\does-not-exist"), "dead python path kept: " + cfg.TtsPythonExePath);
+        Check(!cfg.TtsServerScriptPath.Contains(@"H:\") && !cfg.TtsPythonExePath.Contains(@"D:\"),
+            "migration must never inject another machine's path");
+        return Task.CompletedTask;
+    });
+
+    Case("migrate keeps an existing configured path", () =>
+    {
+        // 用测试目录内的临时文件（沙箱里 %TEMP% 可能不可写）
+        string realFile = Path.Combine(AppContext.BaseDirectory, "existing-path-probe.tmp");
+        File.WriteAllText(realFile, "x");
+        try
+        {
+            var cfg = new AppConfig { TtsServerScriptPath = realFile, TtsPythonExePath = realFile };
+            bool changed = ConfigStore.MigrateLegacyPaths(cfg);
+            Check(!changed, "migration should not touch existing paths");
+            Check(cfg.TtsServerScriptPath == realFile && cfg.TtsPythonExePath == realFile, "existing paths were replaced");
+        }
+        finally { try { File.Delete(realFile); } catch { } }
+        return Task.CompletedTask;
+    });
+
+    Case("defaults no longer hardcode a specific machine", () =>
+    {
+        var cfg = new AppConfig();
+        Check(!cfg.TtsServerScriptPath.Contains(@"H:\program"), "default script path is machine-specific");
+        Check(!cfg.TtsPythonExePath.Contains(@"D:\software"), "default python path is machine-specific");
+        Check(cfg.OllamaPromptTemplate.Contains("{text}"), "default prompt lost its placeholder");
+        Check(cfg.OllamaRequestFrequency == AppConfig.DefaultRequestFrequencyMode, "default frequency mismatch");
+        return Task.CompletedTask;
+    });
+
+    Case("saved json is indented and keeps property names", () =>
+    {
+        ResetConfigFile();
+        using var store = new ConfigStore();
+        store.Save(new AppConfig());
+        string json = File.ReadAllText(configPath);
+        Check(json.Contains('\n'), "config.json should be indented");
+        using var doc = JsonDocument.Parse(json);
+        Check(doc.RootElement.TryGetProperty("WindowWidth", out _), "property names must stay readable");
+        return Task.CompletedTask;
+    });
 }
-
-string configMembers = Select("Services/Settings/SettingsService.Config.cs",
-    "_saveLock", "_saveDebounceTimer", "SaveConfigImmediately", "GetDevSourceConfigPath");
-
-string source = """
-using System;
-using System.IO;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using System.Threading;
-using System.Linq;
-
-public enum GpuPerformanceMode { High, Medium, Low }
-
-public sealed class AppConfig {
-    public string ChineseVariant { get; set; } = "Simplified";
-    public int SpeechSliceDurationSeconds { get; set; } = 6;
-    public string GpuUsageMode { get; set; } = "High";
-    public string SpeechModelType { get; set; } = "tiny";
-    public int InboundHttpPort { get; set; } = 9002;
-    public int InboundOscPort { get; set; } = 9001;
-    public bool InboundAutoSendToVrc { get; set; } = true;
-}
-
-public sealed class SpeechServiceStub {
-    public string ChineseVariant { get; set; } = "Simplified";
-    public int SliceDurationSeconds { get; set; } = 6;
-    public GpuPerformanceMode PerformanceMode { get; set; } = GpuPerformanceMode.High;
-    public string CurrentModelType { get; set; } = "tiny";
-}
-
-public sealed class InboundServiceStub {
-    public int HttpPort { get; set; } = 9002;
-    public int OscPort { get; set; } = 9001;
-    public bool AutoSendToVrc { get; set; } = true;
-}
-
-public class SettingsService {
-    public static readonly string ConfigPath = Path.Combine(
-        AppContext.BaseDirectory, "config-regression", Environment.ProcessId.ToString(), "config.json");
-    public AppConfig Config { get; private set; } = new();
-    public SpeechServiceStub SpeechService { get; } = new();
-    public InboundServiceStub InboundService { get; } = new();
-""" + configMembers + """
-}
-
-public static class Cases {
-    static void Check(bool value, string message) { if (!value) throw new Exception(message); }
-
-    static JsonElement Save(Action<SettingsService> arrange) {
-        var settings = new SettingsService();
-        arrange(settings);
-        Directory.CreateDirectory(Path.GetDirectoryName(SettingsService.ConfigPath)!);
-        settings.SaveConfigImmediately();
-        return JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(SettingsService.ConfigPath));
+finally
+{
+    try
+    {
+        if (backup != null) File.WriteAllText(configPath, backup);
+        else if (File.Exists(configPath)) File.Delete(configPath);
     }
-
-    public static void Run() {
-        // 1. 关键回归：用户已选择 base，但模型还在下载（CurrentModelType 仍是 tiny），
-        //    期间任何一次自动保存都不能把磁盘上的选择改回 tiny。
-        var saved = Save(s => { s.Config.SpeechModelType = "base"; s.SpeechService.CurrentModelType = "tiny"; });
-        Check(saved.GetProperty("SpeechModelType").GetString() == "base",
-            "persisted model became the still-loading actual model: " + saved.GetProperty("SpeechModelType").GetString());
-
-        // 2. 真正切换完成后，磁盘内容仍然等于用户选择
-        saved = Save(s => { s.Config.SpeechModelType = "small"; s.SpeechService.CurrentModelType = "small"; });
-        Check(saved.GetProperty("SpeechModelType").GetString() == "small", "persisted model lost after completed switch");
-
-        // 3. 其它运行时状态仍按服务实际值同步（这些属性的服务端才是唯一真源）
-        saved = Save(s => {
-            s.SpeechService.ChineseVariant = "Traditional";
-            s.SpeechService.SliceDurationSeconds = 8;
-            s.SpeechService.PerformanceMode = GpuPerformanceMode.Low;
-            s.InboundService.HttpPort = 9102;
-            s.InboundService.OscPort = 9101;
-            s.InboundService.AutoSendToVrc = false;
-        });
-        Check(saved.GetProperty("ChineseVariant").GetString() == "Traditional", "ChineseVariant not synced");
-        Check(saved.GetProperty("SpeechSliceDurationSeconds").GetInt32() == 8, "slice duration not synced");
-        Check(saved.GetProperty("GpuUsageMode").GetString() == "Low", "GPU mode not synced");
-        Check(saved.GetProperty("InboundHttpPort").GetInt32() == 9102, "inbound HTTP port not synced");
-        Check(saved.GetProperty("InboundOscPort").GetInt32() == 9101, "inbound OSC port not synced");
-        Check(saved.GetProperty("InboundAutoSendToVrc").GetBoolean() == false, "inbound auto-send not synced");
-
-        // 4. 旧实现的等价写法确实会覆盖意图（证明该缺陷存在，不是测试虚构）
-        var legacy = new AppConfig { SpeechModelType = "base" };
-        legacy.SpeechModelType = "tiny"; // 旧 SaveConfigImmediately 的那一行
-        Check(legacy.SpeechModelType == "tiny", "legacy reference implementation no longer reproduces the defect");
-
-        Console.WriteLine("PASS config persistence intent (4 cases)");
-    }
+    catch { }
 }
-""";
 
-var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
-    .Select(path => MetadataReference.CreateFromFile(path));
-var compilation = CSharpCompilation.Create("ConfigProductionRegression",
-    [CSharpSyntaxTree.ParseText(source)], references,
-    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-using var output = new MemoryStream();
-var result = compilation.Emit(output);
-if (!result.Success) throw new Exception(string.Join(Environment.NewLine, result.Diagnostics));
-var assembly = Assembly.Load(output.ToArray());
-assembly.GetType("Cases")!.GetMethod("Run")!.Invoke(null, null);
+Console.WriteLine($"config regressions: {passed} passed, {failures.Count} failed");
+if (failures.Count > 0) throw new Exception(string.Join(Environment.NewLine, failures));

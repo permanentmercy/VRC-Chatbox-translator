@@ -136,6 +136,13 @@ public sealed partial class TranslationSection : UserControl
                 {
                     int hyIdx = models.FindIndex(m => m.Contains("HY-MT", StringComparison.OrdinalIgnoreCase));
                     OllamaModelComboBox.SelectedIndex = hyIdx >= 0 ? hyIdx : 0;
+
+                    // 配置里的模型已经不在服务端列表里：自动回退选中的这一项必须同步回配置，
+                    // 否则下拉框显示 HY-MT、实际翻译请求仍在用那个已被删除的模型（Ollama 会 404）。
+                    string fallback = models[OllamaModelComboBox.SelectedIndex];
+                    SettingsService.Instance.OllamaModel = fallback;
+                    SettingsService.Instance.AddLog("Translation",
+                        $"配置里的翻译模型 [{current}] 已不在 Ollama 列表中，已自动切换为 [{fallback}]", true);
                 }
             }
             else
@@ -204,17 +211,13 @@ public sealed partial class TranslationSection : UserControl
     private async void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_isInitializing || _isLoadingModels) return;
-        string oldModel = SettingsService.Instance.OllamaModel;
-        string? newModel = null;
-        if (OllamaModelComboBox.SelectedItem is string modelStr)
-        {
-            newModel = modelStr;
-        }
-        else if (!string.IsNullOrWhiteSpace(OllamaModelComboBox.Text))
-        {
-            newModel = OllamaModelComboBox.Text.Trim();
-        }
 
+        // 只认“从列表里选中一项”。模型框是可编辑的 ComboBox：用户开始打字时选中会被清空并触发
+        // 一次 SelectionChanged，若这里再回读 Text，就会把刚敲下的第一个字母当成模型名写进配置，
+        // 并顺带把上一个模型从显存卸载一次。手输的完整模型名由 OllamaModelComboBox_LostFocus 统一处理。
+        if (OllamaModelComboBox.SelectedItem is not string newModel) return;
+
+        string oldModel = SettingsService.Instance.OllamaModel;
         if (!string.IsNullOrEmpty(newModel) && !string.Equals(oldModel, newModel, StringComparison.OrdinalIgnoreCase))
         {
             SettingsService.Instance.OllamaModel = newModel;

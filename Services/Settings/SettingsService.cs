@@ -546,7 +546,8 @@ public partial class SettingsService
         get => Config.IsSentMessageTranslationEnabled;
         set { if (Config.IsSentMessageTranslationEnabled != value) { Config.IsSentMessageTranslationEnabled = value; SaveConfigDebounced(); } }
     }
-    public const string DefaultOllamaPromptTemplate = "Translate the following text into {targetLanguage}. Output ONLY the translated text without explanation, notes, or quotes:\n\n{text}";
+    /// <summary>兼容旧调用点：默认提示词的定义已移到 <see cref="AppConfig"/>。</summary>
+    public const string DefaultOllamaPromptTemplate = AppConfig.DefaultOllamaPromptTemplate;
     public string OllamaPromptTemplate
     {
         get => Config.OllamaPromptTemplate;

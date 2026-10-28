@@ -126,7 +126,7 @@ public partial class SettingsService
         string Mode, string Label, int IntervalMs, int MinNewChars);
 
     /// <summary>默认档位。0.8 秒 / 3 字，与加入本设置之前写死的节流参数完全一致。</summary>
-    public const string DefaultRequestFrequencyMode = "Normal";
+    public const string DefaultRequestFrequencyMode = AppConfig.DefaultRequestFrequencyMode;
 
     /// <summary>
     /// 可选档位。IntervalMs &lt;= 0 表示关闭假说预翻译。

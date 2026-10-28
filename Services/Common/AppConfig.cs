@@ -102,7 +102,11 @@ public class AppConfig
     public string OllamaEndpoint { get; set; } = "http://127.0.0.1:11434";
     public string OllamaModel { get; set; } = "RogerBen/HY-MT2-1.8B:latest";
     public string TargetLanguage { get; set; } = "英语 (English)";
-    public string OllamaPromptTemplate { get; set; } = SettingsService.DefaultOllamaPromptTemplate;
+    public string OllamaPromptTemplate { get; set; } = DefaultOllamaPromptTemplate;
+
+    /// <summary>默认翻译提示词。放在配置模型里，让 AppConfig 不依赖 SettingsService。</summary>
+    public const string DefaultOllamaPromptTemplate =
+        "Translate the following text into {targetLanguage}. Output ONLY the translated text without explanation, notes, or quotes:\n\n{text}";
 
     /// <summary>
     /// Ollama 请求频率档位（语音假说预翻译的节流）。
@@ -110,7 +114,10 @@ public class AppConfig
     /// "Off" / "Low" / "Normal" / "High" / "Ultra"，默认 "Normal"（0.8 秒一次）。
     /// 定稿句的翻译不受此开关影响，永远只发一次。
     /// </summary>
-    public string OllamaRequestFrequency { get; set; } = SettingsService.DefaultRequestFrequencyMode;
+    public string OllamaRequestFrequency { get; set; } = DefaultRequestFrequencyMode;
+
+    /// <summary>默认请求频率档位名。</summary>
+    public const string DefaultRequestFrequencyMode = "Normal";
 
     /// <summary>
     /// 发送消息时是否自动把「我发出去的文字」翻译成目标语言。
@@ -133,8 +140,10 @@ public class AppConfig
     public string TtsServerEndpoint { get; set; } = "http://127.0.0.1:9880";
     public int TtsServerPort { get; set; } = 9880;
     public bool AutoStartTtsServer { get; set; } = false;
-    public string TtsPythonExePath { get; set; } = @"D:\software\conda\envs\indextts\python.exe";
-    public string TtsServerScriptPath { get; set; } = @"H:\program\chatbox\indextts\tts_server.py";
+    // 默认留空：具体路径取决于用户把 indextts 装在哪，由 ConfigStore.MigrateLegacyPaths
+    // 在启动时探测（不再把某台开发机的绝对路径写成默认值）。
+    public string TtsPythonExePath { get; set; } = string.Empty;
+    public string TtsServerScriptPath { get; set; } = string.Empty;
     public string TtsModelName { get; set; } = "gpt_me_lora.pth";
 
     /// <summary>
