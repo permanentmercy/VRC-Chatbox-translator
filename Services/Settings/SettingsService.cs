@@ -63,7 +63,7 @@ public partial class SettingsService
             if (Config.SpeechEngine != value)
             {
                 Config.SpeechEngine = value;
-                Interlocked.Increment(ref _speechStateVersion);
+                SpeechEngines.InvalidateIntent();
                 SaveConfigDebounced();
                 UpdateLanguageVariable();
                 if (IsSpeechRecognitionEnabled)
@@ -423,7 +423,7 @@ public partial class SettingsService
             if (Config.IsSpeechRecognitionEnabled != value)
             {
                 Config.IsSpeechRecognitionEnabled = value;
-                Interlocked.Increment(ref _speechStateVersion);
+                SpeechEngines.InvalidateIntent();
                 SaveConfigDebounced();
             }
         }
@@ -1123,7 +1123,7 @@ public partial class SettingsService
             }
         };
 
-        SpeechService.ListeningStateChanged += listening => OnSpeechRunningStateChanged("Whisper", listening);
+        SpeechService.ListeningStateChanged += listening => SpeechEngines.OnEngineRunningChanged("Whisper", listening);
 
         LiveCaptionsService.SpeechHypothesis += interimText =>
         {
@@ -1185,7 +1185,7 @@ public partial class SettingsService
             }
         };
 
-        LiveCaptionsService.RunningStateChanged += running => OnSpeechRunningStateChanged("LiveCaptions", running);
+        LiveCaptionsService.RunningStateChanged += running => SpeechEngines.OnEngineRunningChanged("LiveCaptions", running);
 
         PersistentTextService.IsEnabled = Config.IsPersistentTextEnabled;
         PersistentTextService.CustomText = Config.PersistentCustomText;

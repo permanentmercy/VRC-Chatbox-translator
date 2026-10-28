@@ -39,7 +39,8 @@
 | 三处重复的换行正则 + 截断 + TTS 清洗 | `Core/Text/ChatTextNormalizer`（纯函数） | ✅ 已完成 |
 | `SettingsService.Osc.cs` 里的打字状态机 | `Core/Messaging/TypingIndicator`（120ms 防抖 / 1.5s 心跳 / 最终发送互斥） | ✅ 已完成 |
 | `SettingsService.Osc.cs`（296 → 200 行） | 保留发送门面：互斥、110ms 保底间隔、朗读/翻译分派 | ✅ 已完成 |
-| `SettingsService.Speech.cs`（681 行） | `Core/Speech/SubtitlePipeline` + `SpeechCoordinator` | ⏳ 待做 |
+| `SettingsService.Speech.cs`（681 行） | `Core/Speech/SubtitlePipeline` + `SpeechCoordinator` | 🚧 引擎协调器已完成，字幕管线待做 |
+| 引擎启停/切换状态机 | `Core/Speech/SpeechEngineCoordinator` + 两个 `ISpeechEngineControl` 适配器 | ✅ 已完成 |
 | `SettingsService.Speech.cs` 里的翻译档位与语言解析 | `Core/Translation/TranslationPolicy`（纯策略） | ✅ 已完成 |
 | `SettingsService.Lifecycle.cs`（184 行） | `App/ShutdownCoordinator` | ⏳ 待做 |
 | `SettingsService.cs`（1,269 行，属性与日志） | 保留为**门面**（供 UI 绑定），内部委托给上面各模块 | ⏳ 待做 |

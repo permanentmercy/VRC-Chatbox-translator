@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using VrcChatboxDemo.Services.Speech;
 using VrcChatboxDemo.Services.Translation;
 
 namespace VrcChatboxDemo.Services;
@@ -22,23 +23,38 @@ public partial class SettingsService
     private bool _isNewSentence = true;
     private string _lastHypothesisSpeech = string.Empty;
 
-    // 语音引擎启停/切换是异步的（Whisper 加载、LiveCaptions 进程重启）。
-    // 用户快速切换引擎或连续拨动开关时，若并发执行会出现“旧引擎刚停、新引擎又被
-    // 另一条任务停掉”的交错，最终两个引擎都可能处于运行/停止的错误状态。
-    private readonly SemaphoreSlim _speechStateLock = new(1, 1);
-    private long _speechStateVersion;
-    private int _speechStateApplying;
+    // 语音引擎启停/切换的状态机已移入 Core：SpeechEngineCoordinator。
+    // 这里只保留门面转发与「宿主事实」的实现（配置属性、状态栏、UI 通知）。
+    private SpeechEngineCoordinator? _speechEngines;
 
-    private void OnSpeechRunningStateChanged(string engine, bool running)
+    private SpeechEngineCoordinator SpeechEngines => _speechEngines ??= new SpeechEngineCoordinator(
+        new SpeechEngineContext(this),
+        new WhisperEngineControl(SpeechService, () => (SpeechLanguageTag, AudioInputDeviceId)),
+        new LiveCaptionsEngineControl(LiveCaptionsService, () => Config.LiveCaptionsHideNativeWindow));
+
+    /// <summary>把 SettingsService 的配置/事件适配成协调器需要的上下文。</summary>
+    private sealed class SpeechEngineContext : ISpeechEngineContext
     {
-        // Apply 内的停旧引擎/启动结果是过渡态，由 Apply 根据最新用户意图统一收敛。
-        if (Volatile.Read(ref _speechStateApplying) != 0 ||
-            !string.Equals(SpeechEngine, engine, StringComparison.OrdinalIgnoreCase)) return;
+        private readonly SettingsService _owner;
+        public SpeechEngineContext(SettingsService owner) => _owner = owner;
 
-        // 非切换期间的意外停止仍应关闭开关，不能把后台故障伪装成正在监听。
-        // true 只代表 actual 成功，绝不覆盖用户已经写下的 false。
-        if (!running) IsSpeechRecognitionEnabled = false;
-        NotifySpeechRecognitionState();
+        public string Engine => _owner.SpeechEngine;
+
+        public bool Enabled
+        {
+            get => _owner.IsSpeechRecognitionEnabled;
+            set => _owner.IsSpeechRecognitionEnabled = value;
+        }
+
+        public void NotifyDisplaySettingsChanged() => _owner.DisplaySettingsChanged?.Invoke();
+
+        public void NotifyRecognitionStateChanged() => _owner.NotifySpeechRecognitionState();
+
+        public void SetStatus(string message)
+        {
+            _owner.SpeechStatus = message;
+            _owner.SpeechStatusUpdated?.Invoke(message);
+        }
     }
 
     private void NotifySpeechRecognitionState()
@@ -589,66 +605,8 @@ public partial class SettingsService
         }
     }
 
-    public async Task ApplySpeechStateAsync()
-    {
-        await _speechStateLock.WaitAsync();
-        Interlocked.Exchange(ref _speechStateApplying, 1);
-        long version = Volatile.Read(ref _speechStateVersion);
-        string engine = SpeechEngine;
-        try
-        {
-            DisplaySettingsChanged?.Invoke();
-
-            // await 期间用户仍可修改开关/引擎。旧启动完成后先重新读取意图，
-            // 必要时在释放锁之前停止它，而不是用 actual 事件把关闭改回开启。
-            while (true)
-            {
-                version = Volatile.Read(ref _speechStateVersion);
-                engine = SpeechEngine;
-                if (!IsSpeechRecognitionEnabled)
-                {
-                    await SpeechService.StopAsync();
-                    await LiveCaptionsService.StopAsync();
-                }
-                else
-                {
-                    bool isLiveCaptions = string.Equals(engine, "LiveCaptions", StringComparison.OrdinalIgnoreCase);
-                    if (isLiveCaptions) await SpeechService.StopAsync();
-                    else await LiveCaptionsService.StopAsync();
-
-                    if (version != Volatile.Read(ref _speechStateVersion)) continue;
-
-                    bool started = isLiveCaptions
-                        ? await LiveCaptionsService.StartAsync(Config.LiveCaptionsHideNativeWindow)
-                        : await SpeechService.StartAsync(SpeechLanguageTag, AudioInputDeviceId);
-
-                    if (version != Volatile.Read(ref _speechStateVersion)) continue;
-
-                    bool running = isLiveCaptions ? LiveCaptionsService.IsRunning : SpeechService.IsListening;
-                    if (!started || !running) IsSpeechRecognitionEnabled = false;
-                }
-
-                if (version == Volatile.Read(ref _speechStateVersion)) break;
-            }
-        }
-        catch (Exception ex)
-        {
-            // 仅回滚同一请求；迟到的失败也不能覆盖更新的开启/引擎选择。
-            if (version == Volatile.Read(ref _speechStateVersion) &&
-                string.Equals(engine, SpeechEngine, StringComparison.OrdinalIgnoreCase))
-            {
-                IsSpeechRecognitionEnabled = false;
-            }
-            SpeechStatus = $"应用语音状态失败: {ex.Message}";
-            SpeechStatusUpdated?.Invoke(SpeechStatus);
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _speechStateApplying, 0);
-            _speechStateLock.Release();
-            NotifySpeechRecognitionState();
-        }
-    }
+    /// <summary>按当前意图收敛两个语音引擎的实际状态（实现在 SpeechEngineCoordinator）。</summary>
+    public Task ApplySpeechStateAsync() => SpeechEngines.ApplyAsync();
 
     public async Task SwitchSpeechLanguageAsync(string languageTag)
     {
