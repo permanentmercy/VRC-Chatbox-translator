@@ -1,12 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
   <ItemGroup>
-    <!-- 目录扫描是纯查询：直接编译生产类，用临时目录驱动。 -->
     <Compile Include="..\..\Services\Synthesis\TtsCatalog.cs" Link="Production\TtsCatalog.cs" />
     <Compile Include="..\..\Services\Tts\TtsModels.cs" Link="Production\TtsModels.cs" />
   </ItemGroup>

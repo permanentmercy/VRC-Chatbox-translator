@@ -1,12 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
   <ItemGroup>
-    <!-- 直接编译生产类；NAudio 只用最小桩（接口与 WaveFormat）。 -->
     <Compile Include="..\..\Services\Synthesis\PlaybackProviders.cs" Link="Production\PlaybackProviders.cs" />
   </ItemGroup>
 </Project>
