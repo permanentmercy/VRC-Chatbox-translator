@@ -197,18 +197,25 @@ public sealed partial class InteractionSection : UserControl
     {
         if (_isInitializing) return;
         bool isOn = PersistentTextSwitch.IsOn;
-        SettingsService.Instance.IsPersistentTextEnabled = isOn;
+        var s = SettingsService.Instance;
+        s.IsPersistentTextEnabled = isOn;
         PersistentTextBox.IsEnabled = isOn;
+
+        // 常驻服务自己有 CustomText / IsEnabled 两份状态，只有 SubmitAsync 与 SettingsService 的
+        // 启动恢复会写它们。开关这里不同步的话：
+        //   · 打开：RestartLoop 因 IsEnabled=false（或 CustomText 还是旧值/空）直接返回，保活永远不启动；
+        //   · 关闭：StopLoop 只取消循环、不会清 IsEnabled，状态栏会一直显示“常驻保活中”。
+        // 按启动恢复的同一口径同步（PersistentTextService.CustomText / IsEnabled → RestartLoop）。
+        s.PersistentTextService.CustomText = s.PersistentCustomText ?? string.Empty;
+        s.PersistentTextService.IsEnabled = isOn && !string.IsNullOrWhiteSpace(s.PersistentCustomText);
 
         if (isOn)
         {
-            SettingsService.Instance.PersistentTextService.RestartLoop(
-                SettingsService.Instance.VariableService,
-                SettingsService.Instance.OscService);
+            s.PersistentTextService.RestartLoop(s.VariableService, s.OscService);
         }
         else
         {
-            SettingsService.Instance.PersistentTextService.StopLoop();
+            s.PersistentTextService.StopLoop();
         }
 
         RefreshStatusText();
@@ -260,6 +267,20 @@ public sealed partial class InteractionSection : UserControl
         }
 
         await s.PersistentTextService.SubmitAsync(text, s.VariableService, s.OscService, s);
+
+        // 空模板提交时 SubmitAsync 内部会走 ClearAsync（服务置为未启用 + 停掉保活循环），
+        // 这里必须把开关一起关掉：否则界面会同时显示“开关=开启 / 状态=常驻未开启”，
+        // 且 IsPersistentTextEnabled 仍是 true 会被持久化——下次启动时 SettingsService 的
+        // 启动恢复又会把服务的 IsEnabled 置为 true，状态栏就变成谎报“常驻保活中”。
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            if (PersistentTextSwitch.IsOn)
+            {
+                PersistentTextSwitch.IsOn = false;
+            }
+            s.IsPersistentTextEnabled = false;
+        }
+
         RefreshStatusText();
     }
 

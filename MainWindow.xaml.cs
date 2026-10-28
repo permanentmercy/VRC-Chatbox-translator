@@ -59,15 +59,10 @@ public sealed partial class MainWindow : Window
         // 否则 150% 缩放下 820px 只有约 547 DIP，设置页内容区不足 700 DIP。
         uint dpi = GetDpiForWindow(_hWnd);
         double dpiScale = dpi > 0 ? dpi / 96.0 : 1.0;
-        bool hasSavedSize = cfg.WindowWidth != NormalWidth || cfg.WindowHeight != NormalHeight;
-
-        int width = hasSavedSize && cfg.WindowWidth >= 400
-            ? cfg.WindowWidth
-            : (int)Math.Round(NormalWidth * dpiScale);
-        int height = hasSavedSize && cfg.WindowHeight >= 300
-            ? cfg.WindowHeight
-            : (int)Math.Round(NormalHeight * dpiScale);
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
+        var initialSize = WindowSizePolicy.Resolve(
+            cfg.HasSavedWindowSize, cfg.WindowWidth, cfg.WindowHeight,
+            dpiScale, NormalWidth, NormalHeight);
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(initialSize.Width, initialSize.Height));
 
         // 2. 恢复窗口屏幕位置 (校验是否存在于当前活动显示器内)
         if (cfg.WindowX.HasValue && cfg.WindowY.HasValue)
@@ -169,6 +164,7 @@ public sealed partial class MainWindow : Window
                     cfg.WindowX = AppWindow.Position.X;
                     cfg.WindowY = AppWindow.Position.Y;
                     cfg.IsMaximized = false;
+                    cfg.HasSavedWindowSize = true;
                     SettingsService.Instance.SaveConfigDebounced();
                 }
                 else if (p.State == OverlappedPresenterState.Maximized)
@@ -667,5 +663,31 @@ public sealed partial class MainWindow : Window
         {
             ContentFrame.Navigate(targetPage, null, new SuppressNavigationTransitionInfo());
         }
+    }
+}
+
+/// <summary>
+/// 首次启动窗口尺寸判定。单独抽成纯函数，既能脱离 WinUI 做确定性回归，
+/// 也避免再用“尺寸等于默认值”当“从未保存”的哨兵。
+/// </summary>
+internal static class WindowSizePolicy
+{
+    internal static (int Width, int Height) Resolve(
+        bool hasSavedSize, int savedWidth, int savedHeight,
+        double dpiScale, int normalWidthDip, int normalHeightDip)
+    {
+        if (dpiScale <= 0) dpiScale = 1.0;
+
+        // AppWindow.Resize 用物理像素，而默认尺寸是 DIP：首次启动必须按 DPI 换算，
+        // 否则 150% 缩放下窗口内容区会明显偏小。
+        int fallbackWidth = (int)Math.Round(normalWidthDip * dpiScale);
+        int fallbackHeight = (int)Math.Round(normalHeightDip * dpiScale);
+
+        if (!hasSavedSize) return (fallbackWidth, fallbackHeight);
+
+        // 保存值可能来自分辨率更小的显示器或异常配置，低于下限时回退到默认尺寸。
+        int width = savedWidth >= 400 ? savedWidth : fallbackWidth;
+        int height = savedHeight >= 300 ? savedHeight : fallbackHeight;
+        return (width, height);
     }
 }

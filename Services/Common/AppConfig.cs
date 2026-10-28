@@ -13,6 +13,13 @@ public class AppConfig
     // ==========================================
     public int WindowWidth { get; set; } = 820;
     public int WindowHeight { get; set; } = 560;
+
+    /// <summary>
+    /// 是否已经保存过真实窗口尺寸。
+    /// 不能用 "WindowWidth 等于默认值" 来推断“从未保存”：用户完全可能把窗口调到恰好
+    /// 820x560 物理像素，那样下次启动会被当成首次运行，在非 100% DPI 下尺寸被重新换算而跳变。
+    /// </summary>
+    public bool HasSavedWindowSize { get; set; } = false;
     public int? WindowX { get; set; } = null;
     public int? WindowY { get; set; } = null;
     public bool IsAlwaysOnTop { get; set; } = false;

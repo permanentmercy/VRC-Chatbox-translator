@@ -9,6 +9,7 @@ public partial class App : Application
 {
     private MainWindow? _mainWindow;
     private ImmersiveWindow? _immersiveWindow;
+    private bool _startupCompleted;
     public static Microsoft.UI.Dispatching.DispatcherQueue? DispatcherQueueInstance { get; private set; }
 
     private static System.Threading.Mutex? _appMutex;
@@ -103,6 +104,16 @@ public partial class App : Application
             }
             catch { }
             e.Handled = true;
+
+            // 托盘常驻程序平时吞掉异常继续跑是合理的，但**启动阶段**失败不能吞：
+            // 此时既没有主窗口也没有托盘图标，进程却仍持有单实例互斥量。
+            // 用户再点快捷方式时新实例会判定“已有实例在运行”→ 唤醒不存在的窗口 → 退出，
+            // 结果就是程序永远打不开，只能去任务管理器杀进程。
+            if (!_startupCompleted)
+            {
+                try { ReleaseSingleInstanceMutex(); } catch { }
+                System.Environment.Exit(1);
+            }
         };
         InitializeComponent();
     }
@@ -217,6 +228,9 @@ public partial class App : Application
 
             // 启动初始化：按配置自动启动语音识别等后台服务
             _ = SettingsService.Instance.InitializeStartupServicesAsync();
+
+            // 走到这里说明窗口与托盘都已就绪，之后的未处理异常才可以安全地吞掉。
+            _startupCompleted = true;
         }
         catch (Exception ex)
         {
