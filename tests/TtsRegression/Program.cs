@@ -6,7 +6,11 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 // Compile unmodified production synthesis/lifecycle members, replacing only settings and HTTP.
 // No WinUI, NAudio, Python server, real audio endpoint, or NuGet package is required.
 string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
-var tree = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "Services/Tts/TtsService.cs")));
+// TtsService 是分部类：成员分散在 TtsService*.cs，需要跨文件合并后再筛选。
+var trees = Directory.GetFiles(Path.Combine(root, "Services/Tts"), "TtsService*.cs")
+    .OrderBy(path => path, StringComparer.Ordinal)
+    .Select(path => CSharpSyntaxTree.ParseText(File.ReadAllText(path)))
+    .ToArray();
 var selected = new HashSet<string>(StringComparer.Ordinal) {
     "_httpClient", "_serverProcess", "_serverProcessLock", "_serverGeneration", "_disposeStarted",
     "_activePlaybackCts", "_playbackLock", "State", "StatusMessage", "StateChanged",
@@ -16,8 +20,11 @@ var selected = new HashSet<string>(StringComparer.Ordinal) {
     "_synthesisSequence", "_streamReadTimeout", "BeginSynthesis", "TrySetSynthesisState",
     "IsCurrentSynthesis", "ReadStreamBodyAsync"
 };
-var members = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
-    .Single(c => c.Identifier.Text == "TtsService").Members.Where(m => m switch {
+var members = trees
+    .SelectMany(tree => tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>())
+    .Where(c => c.Identifier.Text == "TtsService")
+    .SelectMany(c => c.Members)
+    .Where(m => m switch {
         ConstructorDeclarationSyntax => true,
         MethodDeclarationSyntax x => selected.Contains(x.Identifier.Text),
         PropertyDeclarationSyntax x => selected.Contains(x.Identifier.Text),
