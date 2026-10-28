@@ -96,17 +96,31 @@ public sealed partial class ImmersiveWindow : Window
         InputCard.SizeChanged += (s, e) => UpdateHitBounds();
 
         // 沉浸窗没有标题栏关闭按钮，但 Alt+F4 仍会触发 Closing。
-        // 若真的关闭窗口，之后切换沉浸模式时 AppWindow.Show() 会抛异常，
-        // 主窗口又已被隐藏，程序会变成“只剩托盘图标”的不可见状态。
-        AppWindow.Closing += (s, e) =>
-        {
-            e.Cancel = true;
-            AppWindow.Hide();
-            // Alt+F4 与“退出简洁模式”语义一致，避免模式仍开启而唤醒逻辑拒绝隐藏窗口。
-            SettingsService.Instance.SetImmersiveMode(false);
-        };
+        AppWindow.Closing += (s, e) => HandleImmersiveWindowClosing(s, e, IsSystemShuttingDown());
 
         Closed += ImmersiveWindow_Closed;
+    }
+
+    /// <summary>
+    /// 沉浸窗的关闭拦截。
+    /// 若真的关闭窗口，之后切换沉浸模式时 AppWindow.Show() 会抛异常，
+    /// 主窗口又已被隐藏，程序会变成“只剩托盘图标”的不可见状态，因此默认取消关闭。
+    /// 但 Windows 关机/注销时绝不能取消关闭，否则会阻止系统关机
+    /// （判据与 MainWindow.AppWindow.Closing 完全一致）。
+    /// </summary>
+    internal void HandleImmersiveWindowClosing(AppWindow sender, AppWindowClosingEventArgs args, bool systemShuttingDown)
+    {
+        if (systemShuttingDown)
+        {
+            // 关机期间必须放行关闭；也不要切换沉浸模式——那会让 App 的
+            // ImmersiveModeToggled 处理器把正在关闭的主窗口重新 Show 出来。
+            return;
+        }
+
+        args.Cancel = true;
+        sender.Hide();
+        // Alt+F4 与“退出简洁模式”语义一致，避免模式仍开启而唤醒逻辑拒绝隐藏窗口。
+        SettingsService.Instance.SetImmersiveMode(false);
     }
 
     private void ImmersiveWindow_Closed(object sender, WindowEventArgs args)

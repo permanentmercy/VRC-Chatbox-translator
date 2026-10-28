@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Services\Osc\Inbound\InboundService.cs" Link="Production\InboundService.cs" />
+    <Compile Include="..\..\Services\Osc\Inbound\InboundService.Http.cs" Link="Production\InboundService.Http.cs" />
+    <Compile Include="..\..\Services\Osc\Inbound\InboundService.Osc.cs" Link="Production\InboundService.Osc.cs" />
+    <Compile Include="..\..\Services\Osc\OscService.cs" Link="Production\OscService.cs" />
+    <Compile Include="..\..\Services\Template\PersistentTextService.cs" Link="Production\PersistentTextService.cs" />
+    <Compile Include="..\..\Services\Template\VariableService.cs" Link="Production\VariableService.cs" />
+    <Compile Include="..\TemplateRegression\SettingsServiceStub.cs" Link="Production\SettingsServiceStub.cs" />
+  </ItemGroup>
+</Project>

@@ -25,6 +25,18 @@ public sealed partial class ImmersiveWindow : Window
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
+
+    private const int SM_SHUTTINGDOWN = 0x2000;
+
+    /// <summary>
+    /// Windows 关机/注销探测。与 MainWindow.AppWindow.Closing 使用同一判据：
+    /// 关机期间任何窗口都不能拒绝关闭，否则会阻止系统关机。
+    /// </summary>
+    internal static bool IsSystemShuttingDown()
+        => GetSystemMetrics(SM_SHUTTINGDOWN) != 0 || Environment.HasShutdownStarted;
+
+    [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [StructLayout(LayoutKind.Sequential)]

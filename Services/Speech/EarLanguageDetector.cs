@@ -19,18 +19,21 @@ public class EarLanguageDetector : IDisposable
     private WhisperProcessor? _processor;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private bool _isInitialized;
+    private int _isDisposed;
     private string _loadedModelName = "ggml-tiny";
 
-    public bool IsInitialized => _isInitialized;
+    public bool IsInitialized => Volatile.Read(ref _isDisposed) == 0 && _isInitialized;
     public string LoadedModelName => _loadedModelName;
 
     public async Task<bool> InitializeAsync()
     {
+        if (Volatile.Read(ref _isDisposed) != 0) return false;
         if (_isInitialized) return true;
 
         await _lock.WaitAsync();
         try
         {
+            if (Volatile.Read(ref _isDisposed) != 0) return false;
             if (_isInitialized) return true;
 
             string baseDir = AppContext.BaseDirectory;
@@ -80,6 +83,13 @@ public class EarLanguageDetector : IDisposable
             _factory = built.factory;
             _processor = built.processor;
             _isInitialized = true;
+            // Dispose 可能在模型加载期间已经返回；不允许迟到的构建复活实例。
+            // 当前仍持有推理锁，局部/已发布句柄均可在这里安全回收。
+            if (Volatile.Read(ref _isDisposed) != 0)
+            {
+                DisposeHandlesUnderLock();
+                return false;
+            }
             return true;
         }
         catch (Exception ex)
@@ -98,7 +108,7 @@ public class EarLanguageDetector : IDisposable
     /// </summary>
     public async Task<EarLanguageResult?> DetectFromAudioAsync(float[] samples16k, Action<float>? rmsCallback = null)
     {
-        if (!_isInitialized || _processor == null || samples16k == null || samples16k.Length < 8000)
+        if (Volatile.Read(ref _isDisposed) != 0 || !_isInitialized || _processor == null || samples16k == null || samples16k.Length < 8000)
         {
             return null;
         }
@@ -137,6 +147,8 @@ public class EarLanguageDetector : IDisposable
         await _lock.WaitAsync();
         try
         {
+            // 等锁期间可能已 Dispose，必须在使用原生句柄前再次验证生命周期。
+            if (Volatile.Read(ref _isDisposed) != 0 || !_isInitialized || _processor == null) return null;
             var (lang, prob) = _processor.DetectLanguageWithProbability(inferenceSamples);
             if (string.IsNullOrWhiteSpace(lang) || prob < 0.35f)
             {
@@ -175,27 +187,34 @@ public class EarLanguageDetector : IDisposable
         };
     }
 
+    private void DisposeHandlesUnderLock()
+    {
+        _isInitialized = false;
+        try { _processor?.Dispose(); } catch { }
+        try { _factory?.Dispose(); } catch { }
+        _processor = null;
+        _factory = null;
+    }
+
     public void Dispose()
     {
-        // 先把状态置为未初始化：Dispose 之后若仍有在途检测进入 DetectFromAudioAsync，
-        // 会在入口直接返回 null，而不是对已释放的 processor 调用 DetectLanguage。
+        if (Interlocked.Exchange(ref _isDisposed, 1) != 0) return;
         _isInitialized = false;
 
-        bool gotLock = false;
-        try { gotLock = _lock.Wait(500); } catch { }
-        try
+        if (_lock.Wait(500))
         {
-            try { _processor?.Dispose(); } catch { }
-            try { _factory?.Dispose(); } catch { }
-            _processor = null;
-            _factory = null;
+            try { DisposeHandlesUnderLock(); }
+            finally { _lock.Release(); }
         }
-        finally
+        else
         {
-            if (gotLock)
+            // 推理/加载超过退出预算时延迟回收，绝不能在原生代码仍使用句柄时强制释放。
+            _ = Task.Run(async () =>
             {
-                try { _lock.Release(); } catch { }
-            }
+                await _lock.WaitAsync();
+                try { DisposeHandlesUnderLock(); }
+                finally { _lock.Release(); }
+            });
         }
 
         // 不 Dispose _lock：并发的检测/初始化仍可能在 finally 里 Release。

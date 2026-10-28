@@ -573,8 +573,12 @@ public sealed partial class MainWindow : Window
 
             if (ContentFrame.CurrentSourcePageType != typeof(ChatPage))
             {
+                // 设置 SelectedItem 已经会经 NavView_SelectionChanged → NavigateToTag 完成导航；
+                // 再直接 Navigate 一次会让 ChatPage 被连续导航两次（多一轮 Loaded/FocusInput，
+                // 并多占一格页面缓存）。NavigateToTag 自带“已在目标页则不动”的幂等判断，
+                // 既能兜住“已选中聊天项但内容页不是聊天页”的异常状态，又不会重复导航。
                 NavView.SelectedItem = ChatNavItem;
-                ContentFrame.Navigate(typeof(ChatPage), null, new SuppressNavigationTransitionInfo());
+                NavigateToTag("chat");
             }
 
             if (ContentFrame.Content is ChatPage chatPage)

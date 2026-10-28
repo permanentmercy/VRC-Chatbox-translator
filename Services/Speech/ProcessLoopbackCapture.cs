@@ -28,6 +28,10 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
     private bool _formatMismatch;
     private int _targetPid;
     private CancellationTokenSource? _watcherCts;
+    private readonly object _recorderSync = new();
+    private readonly SemaphoreSlim _switchLock = new(1, 1);
+    private bool _disposed;
+    private int _captureGeneration;
 
     public WaveFormat WaveFormat
     {
@@ -97,10 +101,20 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     private static bool AreWaveFormatsCompatible(WaveFormat a, WaveFormat b)
     {
-        return a.SampleRate == b.SampleRate &&
-               a.Channels == b.Channels &&
-               a.BitsPerSample == b.BitsPerSample &&
-               a.Encoding == b.Encoding;
+        if (a.SampleRate != b.SampleRate || a.Channels != b.Channels ||
+            a.BitsPerSample != b.BitsPerSample || a.BlockAlign != b.BlockAlign || a.Encoding != b.Encoding)
+        {
+            return false;
+        }
+        // Extensible 的容器位深/Encoding 相同不代表样本可互换：还要比较真正的
+        // PCM/float 子格式、有效位及声道布局，否则已构建的解码链会把音频解错。
+        if (a is WaveFormatExtensible || b is WaveFormatExtensible)
+        {
+            return a is WaveFormatExtensible ea && b is WaveFormatExtensible eb &&
+                   ea.SubFormat == eb.SubFormat && ea.ValidBitsPerSample == eb.ValidBitsPerSample &&
+                   ea.ChannelMask == eb.ChannelMask;
+        }
+        return true;
     }
 
     private void AttachRecorderEvents(WasapiRecorder recorder)
@@ -127,7 +141,7 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     private void OnRecorderRecordingStopped(object? sender, StoppedEventArgs e)
     {
-        if (_isStopping) return;
+        if (_disposed || _isStopping) return;
 
         // 录制期间收到停止事件 = 目标进程退出/会话中断等异常情况。
         // 旧逻辑写成了 if (!_isRecording)，反而把录制中的异常完全吞掉，
@@ -143,36 +157,35 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     public void StartRecording()
     {
-        if (_isRecording) return;
-        _isRecording = true;
-
-        _recorder?.StartRecording();
-
-        if (!_isProcessFound)
+        lock (_recorderSync)
         {
-            StartProcessWatcher();
+            if (_disposed) throw new ObjectDisposedException(nameof(ProcessLoopbackCapture));
+            if (_isRecording) return;
+            _captureGeneration++;
+            _isRecording = true;
+            try { _recorder?.StartRecording(); }
+            catch { _isRecording = false; throw; }
+
+            if (!_isProcessFound)
+            {
+                StartProcessWatcher();
+            }
         }
     }
 
     public void StopRecording()
     {
-        if (!_isRecording) return;
-        _isRecording = false;
-        _isStopping = true;
-
-        try
+        lock (_recorderSync)
         {
+            // 即使尚未开始录制，Stop 也要使已经在 BuildAsync 中的候选失效。
+            _captureGeneration++;
             StopProcessWatcher();
-
-            try
-            {
-                _recorder?.StopRecording();
-            }
+            if (!_isRecording) return;
+            _isRecording = false;
+            _isStopping = true;
+            try { _recorder?.StopRecording(); }
             catch { }
-        }
-        finally
-        {
-            _isStopping = false;
+            finally { _isStopping = false; }
         }
 
         RecordingStopped?.Invoke(this, new StoppedEventArgs());
@@ -180,61 +193,82 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     public async Task<bool> TrySwitchToProcessAsync()
     {
-        if (_isProcessFound) return true;
-        if (_formatMismatch) return false;
+        // 后台 watcher 与设置页的手动重连可同时进入，只允许一个 native build/publish。
+        // 在排队前记录代次，Stop 也必须让尚未开始 build 的旧请求失效。
+        int generation;
+        lock (_recorderSync)
+        {
+            if (_disposed) return false;
+            generation = _captureGeneration;
+        }
+        await _switchLock.WaitAsync();
+        WasapiRecorder? candidate = null;
         try
         {
-            var procs = Process.GetProcessesByName(_processName);
-            if (procs.Length == 0) return false;
+            lock (_recorderSync)
+            {
+                if (_disposed || generation != _captureGeneration) return false;
+                if (_isProcessFound) return true;
+                if (_formatMismatch) return false;
+            }
 
-            int targetPid = procs[0].Id;
-            foreach (var p in procs) p.Dispose();
+            var procs = Process.GetProcessesByName(_processName);
+            int targetPid;
+            try
+            {
+                if (procs.Length == 0) return false;
+                targetPid = procs[0].Id;
+            }
+            finally { foreach (var p in procs) p.Dispose(); }
 
             StatusNotice?.Invoke($"检测到 {_processName} 已启动 (PID: {targetPid})，正在无缝切换至隔离音频流...");
-
             var builder = new WasapiRecorderBuilder()
                 .WithProcessLoopback((uint)targetPid, ProcessLoopbackMode.IncludeTargetProcessTree);
-            var newRecorder = await builder.BuildAsync();
+            candidate = await builder.BuildAsync();
 
-            // SpeechService 的 BufferedWaveProvider/重采样链是在 StartAsync 时按旧
-            // recorder 的 WaveFormat 构建的，热切换后格式变化会得到变调/错乱音频。
-            // 这种情况宁可保持原监听并提示重启，也不要静默播放损坏音频。
-            if (!AreWaveFormatsCompatible(_waveFormat, newRecorder.WaveFormat))
+            lock (_recorderSync)
             {
-                try { newRecorder.Dispose(); } catch { }
-                _formatMismatch = true;
-                StopProcessWatcher();
-                StatusNotice?.Invoke("新进程音频格式与当前监听不一致，已保持原音频流；请重启语音识别以启用进程隔离。");
-                return false;
+                // Stop/Dispose 不等待可能缓慢的 native build；迟到候选由 finally 回收，绝不安装。
+                if (_disposed || generation != _captureGeneration) return false;
+                if (!AreWaveFormatsCompatible(_waveFormat, candidate.WaveFormat))
+                {
+                    _formatMismatch = true;
+                    StopProcessWatcher();
+                    StatusNotice?.Invoke("新进程音频格式与当前监听不一致，已保持原音频流；请重启语音识别以启用进程隔离。");
+                    return false;
+                }
+
+                // 先验证候选可启动，再拆掉旧流；失败时仍保有原 recorder，候选不会泄漏。
+                if (_isRecording) candidate.StartRecording();
+                var oldRecorder = _recorder;
+                if (oldRecorder != null)
+                {
+                    DetachRecorderEvents(oldRecorder);
+                    try { oldRecorder.StopRecording(); } catch { }
+                    try { oldRecorder.Dispose(); } catch { }
+                }
+
+                _recorder = candidate;
+                candidate = null; // 所有权转移给实例，finally 不再释放已安装的流。
+                _targetPid = targetPid;
+                _isProcessFound = true;
+                _waveFormat = _recorder.WaveFormat;
+                AttachRecorderEvents(_recorder);
+
+                StatusNotice?.Invoke($"已成功锁定 {_processName}，现已过滤全部音乐与外部杂音");
+                ProcessStateChanged?.Invoke(_processName, true, targetPid);
+                return true;
             }
-
-            var oldRecorder = _recorder;
-            if (oldRecorder != null)
-            {
-                DetachRecorderEvents(oldRecorder);
-                try { oldRecorder.StopRecording(); } catch { }
-                oldRecorder.Dispose();
-            }
-
-            _recorder = newRecorder;
-            _targetPid = targetPid;
-            _isProcessFound = true;
-            _waveFormat = newRecorder.WaveFormat;
-            AttachRecorderEvents(_recorder);
-
-            if (_isRecording)
-            {
-                _recorder.StartRecording();
-            }
-
-            StatusNotice?.Invoke($"已成功锁定 {_processName}，现已过滤全部音乐与外部杂音");
-            ProcessStateChanged?.Invoke(_processName, true, targetPid);
-            return true;
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"[ProcessLoopbackCapture] TrySwitchToProcess error: {ex.Message}");
             return false;
+        }
+        finally
+        {
+            try { candidate?.Dispose(); } catch { }
+            _switchLock.Release();
         }
     }
 
@@ -281,15 +315,25 @@ public class ProcessLoopbackCapture : IWaveIn, IDisposable
 
     public void Dispose()
     {
+        lock (_recorderSync)
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
         StopRecording();
 
-        if (_recorder != null)
+        lock (_recorderSync)
         {
-            DetachRecorderEvents(_recorder);
-            _recorder.Dispose();
-            _recorder = null;
+            _isProcessFound = false;
+            if (_recorder != null)
+            {
+                DetachRecorderEvents(_recorder);
+                try { _recorder.Dispose(); }
+                finally { _recorder = null; }
+            }
         }
 
+        // 在途/排队的切换仍需 Release，不 Dispose _switchLock。
         GC.SuppressFinalize(this);
     }
 }

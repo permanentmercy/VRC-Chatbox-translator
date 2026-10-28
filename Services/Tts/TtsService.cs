@@ -27,6 +27,7 @@ public sealed class TtsService : IDisposable
     private readonly object _serverProcessLock = new();
     private long _serverGeneration;
     private long _synthesisSequence;
+    private long _healthCheckSequence;
     // ResponseHeadersRead 之后 HttpClient.Timeout 不再覆盖正文；逐次读取单独限制空闲时间。
     private readonly TimeSpan _streamReadTimeout = TimeSpan.FromMinutes(5);
     private int _disposeStarted;
@@ -90,7 +91,9 @@ public sealed class TtsService : IDisposable
             }
             catch { }
 
-            foreach (var d in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            // 端点集合本身是 COM 对象，枚举完必须释放；只释放每个 MMDevice 会留下集合泄漏。
+            using var collection = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            foreach (var d in collection)
             {
                 try
                 {
@@ -358,11 +361,22 @@ public sealed class TtsService : IDisposable
     /// <summary>
     /// 检查指定 HTTP 服务端是否已处于健康可用状态
     /// </summary>
-    public async Task<TtsHealthStatus?> CheckHealthAsync(string? endpoint = null)
+    public Task<TtsHealthStatus?> CheckHealthAsync(string? endpoint = null)
+    {
+        long generation;
+        long sequence;
+        lock (_serverProcessLock)
+        {
+            generation = _serverGeneration;
+            sequence = ++_healthCheckSequence;
+        }
+        return CheckHealthCoreAsync(endpoint, generation, sequence);
+    }
+
+    private async Task<TtsHealthStatus?> CheckHealthCoreAsync(string? endpoint, long generation, long sequence)
     {
         endpoint ??= SettingsService.Instance.Config.TtsServerEndpoint;
         string healthUrl = endpoint.TrimEnd('/') + "/health";
-
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
@@ -391,7 +405,13 @@ public sealed class TtsService : IDisposable
                         if (!string.IsNullOrWhiteSpace(v)) aliases.Add(v);
                     }
                 }
-                _registeredModelAliases = aliases;
+                lock (_serverProcessLock)
+                {
+                    // 停止/重启后、或更新的探测已经开始时，旧 HTTP 响应不再拥有注册表。
+                    if (_serverGeneration != generation || _healthCheckSequence != sequence ||
+                        Volatile.Read(ref _disposeStarted) != 0) return null;
+                    _registeredModelAliases = aliases;
+                }
 
                 return new TtsHealthStatus(status, ready, model, lowVram, err, aliases);
             }
@@ -406,20 +426,36 @@ public sealed class TtsService : IDisposable
     /// </summary>
     public async Task<TtsHealthStatus?> RefreshHealthAsync(string? endpoint = null)
     {
-        var health = await CheckHealthAsync(endpoint);
-        if (health != null && health.Ready)
+        long generation;
+        long synthesisSequence;
+        long healthSequence;
+        lock (_serverProcessLock)
         {
-            string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
-            SetState(TtsServerState.Ready, $"服务就绪 (模型: {health.Model}, {modeDesc})");
+            generation = _serverGeneration;
+            synthesisSequence = _synthesisSequence;
+            healthSequence = ++_healthCheckSequence;
         }
-        else if (health != null && !health.Ready)
+
+        var health = await CheckHealthCoreAsync(endpoint, generation, healthSequence);
+        lock (_serverProcessLock)
         {
-            SetState(TtsServerState.Error, $"服务启动失败: {health.Error ?? "未知错误"}");
-        }
-        else
-        {
-            // 守卫：如果当前正在启动中或正在合成中，绝不可随意覆写为 Stopped 导致界面按钮误点亮和二次重复启动
-            if (State != TtsServerState.Starting && State != TtsServerState.Synthesizing)
+            // 健康查询只是旁路探测，不能覆盖停止/新合成或更新刷新已经确立的状态。
+            if (_serverGeneration != generation || _synthesisSequence != synthesisSequence ||
+                _healthCheckSequence != healthSequence || Volatile.Read(ref _disposeStarted) != 0)
+                return health;
+            if (State == TtsServerState.Starting || State == TtsServerState.Synthesizing)
+                return health;
+
+            if (health != null && health.Ready)
+            {
+                string modeDesc = health.LowVram ? "低显存模式" : "流式全显存模式";
+                SetState(TtsServerState.Ready, $"服务就绪 (模型: {health.Model}, {modeDesc})");
+            }
+            else if (health != null)
+            {
+                SetState(TtsServerState.Error, $"服务启动失败: {health.Error ?? "未知错误"}");
+            }
+            else
             {
                 SetState(TtsServerState.Stopped, "TTS 引擎已停止 (点击右侧启动引擎)");
             }
@@ -890,17 +926,36 @@ public sealed class TtsService : IDisposable
 
     public static MMDevice? FindFirstVirtualAudioDevice(MMDeviceEnumerator enumerator)
     {
+        MMDeviceCollection? collection = null;
         try
         {
-            foreach (var d in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            collection = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            foreach (var d in collection)
             {
-                if (IsVirtualAudioDevice(d.FriendlyName))
+                bool isVirtual;
+                try
                 {
-                    return d;
+                    isVirtual = IsVirtualAudioDevice(d.FriendlyName);
                 }
+                catch
+                {
+                    // 读取设备属性失败（驱动异常/设备已拔出）时仍要释放该包装，否则 COM 句柄累积。
+                    d.Dispose();
+                    throw;
+                }
+
+                if (isVirtual) return d;
+
+                // 扫描过程中不选中的设备必须立即释放：这里返回后调用方只拥有一个设备，
+                // 旧实现把沿途枚举出的所有 MMDevice 全部泄漏。
+                d.Dispose();
             }
         }
         catch { }
+        finally
+        {
+            try { collection?.Dispose(); } catch { }
+        }
         return null;
     }
 
@@ -947,6 +1002,15 @@ public sealed class TtsService : IDisposable
 
         bool isSameDevice = enableMonitor && micDevice != null && monDevice != null &&
                             string.Equals(micDevice.ID, monDevice.ID, StringComparison.OrdinalIgnoreCase);
+
+        // 默认设备只在真正被采用时交给调用方释放；显式指定了麦克风/监听设备时，
+        // 这个额外打开的默认端点必须在这里释放，否则每次播放都泄漏一个 MMDevice。
+        if (defaultDevice != null &&
+            !ReferenceEquals(defaultDevice, micDevice) &&
+            !ReferenceEquals(defaultDevice, monDevice))
+        {
+            try { defaultDevice.Dispose(); } catch { }
+        }
 
         return (micDevice, monDevice, isSameDevice);
     }
@@ -1231,6 +1295,7 @@ public sealed class TtsService : IDisposable
                     }
 
                     bool startedPlayback = false;
+                    bool playbackInterrupted = false;
                     int chunkCount = 0;
                     long totalBufferedBytes = 0;
                     // 高响应防欠载预缓冲阈值：
@@ -1295,20 +1360,52 @@ public sealed class TtsService : IDisposable
                     // 全部流式音频接收完毕，等待缓冲区全部音频彻底播放完毕
                     if (startedPlayback)
                     {
+                        // 声卡被独占/设备被拔出时 WasapiOut 会自行停止，缓冲区里的 PCM 再也不会被排空。
+                        // 旧实现只等 BufferedBytes 归零：单设备还好，双设备（推流+耳返）里只要有一个
+                        // 播放器还活着就永远不会判定失败，于是死循环并一直占着播放队列。
                         while (!token.IsCancellationRequested)
                         {
-                            int rem = isSameDevice
-                                ? (bufferSame?.BufferedBytes ?? 0)
-                                : Math.Max(bufferMic?.BufferedBytes ?? 0, bufferMon?.BufferedBytes ?? 0);
-                            if (rem <= 0) break;
+                            bool micPending = bufferMic != null && bufferMic.BufferedBytes > 0;
+                            bool monPending = bufferMon != null && bufferMon.BufferedBytes > 0;
+                            bool samePending = bufferSame != null && bufferSame.BufferedBytes > 0;
+
+                            if (isSameDevice)
+                            {
+                                if (!samePending) break;
+                                if (playerSame?.PlaybackState != PlaybackState.Playing)
+                                {
+                                    playbackInterrupted = true;
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                if (!micPending && !monPending) break;
+
+                                bool micStalled = micPending && playerMic?.PlaybackState != PlaybackState.Playing;
+                                bool monStalled = monPending && playerMon?.PlaybackState != PlaybackState.Playing;
+                                if (micStalled || monStalled)
+                                {
+                                    playbackInterrupted = true;
+                                    break;
+                                }
+                            }
+
                             await Task.Delay(30, token);
                         }
+
+                        if (playbackInterrupted)
+                        {
+                            LogOccurred?.Invoke("输出设备已停止播放（被独占或已拔出），已中止本次推流。");
+                        }
+
                         await Task.Delay(150, token); // 硬件延迟余音淡出
                     }
 
                     // 用户点了“停止播放”后，合成流会被取消，但已播放的块数可能 >0。
                     // 不能把这种情况当成成功返回，否则 UI 会误报“推流完成”。
                     if (token.IsCancellationRequested) return false;
+                    if (playbackInterrupted) return false;
 
                     return startedPlayback;
                 }
