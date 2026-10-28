@@ -62,8 +62,11 @@ public sealed class TtsService {
     public void CloseClient() => _httpClient.Dispose();
     public int QueueCount => _playbackQueueLock.CurrentCount;
 }
-""" + string.Join(Environment.NewLine, serviceTree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
-    .Where(x => x.Identifier.Text is "SoftLimiterSampleProvider" or "SpeechQueueWaveProvider").Select(x => x.ToFullString()));
+""" + string.Join(Environment.NewLine, CSharpSyntaxTree
+    .ParseText(File.ReadAllText(Path.Combine(root, "Services/Synthesis/PlaybackProviders.cs")))
+    .GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+    .Where(x => x.Identifier.Text is "SoftLimiterSampleProvider" or "SpeechQueueWaveProvider")
+    .Select(x => x.ToFullString()));
 var trees = new[] {
     CSharpSyntaxTree.ParseText(production),
     CSharpSyntaxTree.ParseText("using System.Collections.Generic;\n" + File.ReadAllText(Path.Combine(root, "Services/Tts/TtsModels.cs"))),
