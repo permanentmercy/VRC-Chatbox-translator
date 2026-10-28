@@ -36,6 +36,12 @@
     <Manifest Include="$(ApplicationManifest)" />
     <!-- Regression executable links production services, but is not part of the WinUI app. -->
     <Compile Remove="tests\**\*.cs" />
+    <!--
+      artifacts\ 是放构建产物、诊断报告与临时探针的目录。SDK 的默认通配会把这里的 .cs
+      也编进主工程：只要有人往里面丢一个带顶级语句的探针文件，主工程就会以
+      “只能有一个编译单元具有顶级语句 / 特性重复”这类莫名其妙的错误失败。
+    -->
+    <Compile Remove="artifacts\**\*.cs" />
   </ItemGroup>
 
   <!--

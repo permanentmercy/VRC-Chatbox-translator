@@ -1,3 +1,4 @@
+using System;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using VrcChatboxDemo.Services;
@@ -7,10 +8,22 @@ namespace VrcChatboxDemo.Views.Sections;
 public sealed partial class NetworkLogSection : UserControl
 {
     private bool _isInitializing = true;
+    private DispatcherTimer? _inboundRestartTimer;
+
+    /// <summary>端口输入停手多久后才真正重启监听，用来把逐字符输入合并成一次。</summary>
+    private const int InboundRestartDebounceMs = 350;
 
     public NetworkLogSection()
     {
         InitializeComponent();
+
+        _inboundRestartTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(InboundRestartDebounceMs) };
+        _inboundRestartTimer.Tick += (s, e) =>
+        {
+            _inboundRestartTimer.Stop();
+            ApplyInboundPorts();
+        };
+
         Loaded += NetworkLogSection_Loaded;
         Unloaded += NetworkLogSection_Unloaded;
     }
@@ -18,6 +31,13 @@ public sealed partial class NetworkLogSection : UserControl
     private void NetworkLogSection_Unloaded(object sender, RoutedEventArgs e)
     {
         SettingsService.Instance.InboundService.StatusChanged -= OnInboundStatusChanged;
+
+        // 还有待执行的重启就立刻补上：否则会出现“界面/配置已经是新端口、实际监听还停在旧端口”。
+        if (_inboundRestartTimer?.IsEnabled == true)
+        {
+            _inboundRestartTimer.Stop();
+            ApplyInboundPorts();
+        }
     }
 
     private void NetworkLogSection_Loaded(object sender, RoutedEventArgs e)
@@ -155,10 +175,7 @@ public sealed partial class NetworkLogSection : UserControl
 
             // 监听器是在 Start 时按旧端口创建的；只改属性不会迁移监听，
             // 会出现“界面显示新端口、实际仍在旧端口监听”的假象。
-            if (SettingsService.Instance.InboundEnabled && InboundSwitch.IsOn)
-            {
-                inService.Start(inService.HttpPort, inService.OscPort);
-            }
+            ScheduleInboundRestart();
         }
     }
 
@@ -173,11 +190,30 @@ public sealed partial class NetworkLogSection : UserControl
             inService.OscPort = port;
             SettingsService.Instance.SaveConfigDebounced();
 
-            if (SettingsService.Instance.InboundEnabled && InboundSwitch.IsOn)
-            {
-                inService.Start(inService.HttpPort, inService.OscPort);
-            }
+            ScheduleInboundRestart();
         }
+    }
+
+    /// <summary>
+    /// 端口输入框是逐字符触发的：每敲一个字符就 Stop+Start 会让正在监听的接口反复拆除重建，
+    /// 中途的半成品端口（如输入 18080 过程中的 1808）也会被真实绑定并广播“已就绪”，
+    /// 外部程序在这期间发出的请求会全部失败。这里只按“参数已落定”触发一次重启。
+    /// </summary>
+    private void ScheduleInboundRestart()
+    {
+        if (!SettingsService.Instance.InboundEnabled || !InboundSwitch.IsOn) return;
+        _inboundRestartTimer?.Stop();
+        _inboundRestartTimer?.Start();
+    }
+
+    private void ApplyInboundPorts()
+    {
+        // 端口改动只有在“外部接口应当运行”时才需要迁移监听。
+        // 防抖期间用户可能已经把开关关掉，这里不能再把它拉起来。
+        if (!SettingsService.Instance.InboundEnabled || !InboundSwitch.IsOn) return;
+
+        var inService = SettingsService.Instance.InboundService;
+        inService.Start(inService.HttpPort, inService.OscPort);
     }
 
     private void RestartInboundButton_Click(object sender, RoutedEventArgs e)
