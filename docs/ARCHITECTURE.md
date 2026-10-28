@@ -37,7 +37,8 @@
 |---|---|---|
 | `SettingsService.Config.cs`（204 行） | `Core/Configuration/ConfigStore`（定位/读写/防抖/迁移） | ✅ 已完成 |
 | 三处重复的换行正则 + 截断 + TTS 清洗 | `Core/Text/ChatTextNormalizer`（纯函数） | ✅ 已完成 |
-| `SettingsService.Osc.cs`（297 行） | `Core/Messaging/ChatSender` + `TypingIndicator` | ⏳ 待做 |
+| `SettingsService.Osc.cs` 里的打字状态机 | `Core/Messaging/TypingIndicator`（120ms 防抖 / 1.5s 心跳 / 最终发送互斥） | ✅ 已完成 |
+| `SettingsService.Osc.cs`（296 → 200 行） | 保留发送门面：互斥、110ms 保底间隔、朗读/翻译分派 | ✅ 已完成 |
 | `SettingsService.Speech.cs`（681 行） | `Core/Speech/SubtitlePipeline` + `SpeechCoordinator` | ⏳ 待做 |
 | `SettingsService.Lifecycle.cs`（184 行） | `App/ShutdownCoordinator` | ⏳ 待做 |
 | `SettingsService.cs`（1,269 行，属性与日志） | 保留为**门面**（供 UI 绑定），内部委托给上面各模块 | ⏳ 待做 |
@@ -56,6 +57,7 @@ Services/
   Common/        跨模块的纯数据模型与通用工具（AppConfig、TransparentBackdrop）
   Configuration/ 配置持久化（ConfigStore）
   Text/          纯文本规范化（ChatTextNormalizer）
+  Messaging/     发送侧时序（TypingIndicator）；后续 ChatSender
   Input/         Win32 热键（HotkeyService*.cs）
   Osc/           OSC 出站与 Inbound 入站（含 Http/Osc 分部）
   Settings/      SettingsService 门面（过渡期保留）

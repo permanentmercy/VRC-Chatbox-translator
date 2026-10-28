@@ -1,170 +1,45 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using VrcChatboxDemo.Services.Messaging;
 using VrcChatboxDemo.Services.Text;
 
 namespace VrcChatboxDemo.Services;
 
-public partial class SettingsService
+/// <summary>
+/// 发送门面：把「发一条消息」的编排留在这里，把打字动画的时序逻辑交给
+/// <see cref="TypingIndicator"/>，把文本规范化交给 <see cref="ChatTextNormalizer"/>。
+///
+/// 本文件剩下的职责只有三件：发送互斥（_sendSemaphore）、
+/// 两次 /chatbox/input 之间的 110ms 保底间隔、发送成功后的朗读/翻译分派。
+/// </summary>
+public partial class SettingsService : ITypingContext
 {
-    private readonly object _typingLock = new();
     private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
-    private CancellationTokenSource? _liveTypingCts;
-    private CancellationTokenSource? _typingHeartbeatCts;
-    private bool _isSendingFinalMessage = false;
-    private bool _hasActiveLiveText = false;
     private DateTime _lastOscSendTime = DateTime.MinValue;
 
-    /// <summary>
-    /// 当用户输入变化时，实时向 VRChat 发送当前内容并持续维持打字中状态，直到按下回车
-    /// </summary>
-    public void UpdateLiveTyping(string rawText)
+    private TypingIndicator? _typingIndicator;
+    private TypingIndicator Typing => _typingIndicator ??= new TypingIndicator(OscService, this);
+
+    // ---- ITypingContext -------------------------------------------------
+    // 显式实现：这些事实只服务于 TypingIndicator，不需要出现在门面的公开 API 上。
+    bool ITypingContext.LiveTypingEnabled => IsLiveTypingEnabled;
+    bool ITypingContext.TypingAnimationEnabled
     {
-        lock (_typingLock)
-        {
-            if (_isSendingFinalMessage)
-            {
-                return;
-            }
-
-            _liveTypingCts?.Cancel();
-            _liveTypingCts?.Dispose();
-            _liveTypingCts = null;
-
-            // 常驻模板接管消息显示时，草稿预览也不再独立写 /chatbox/input，
-            // 否则模板气泡会被原始草稿覆盖（“原本的发送逻辑”仍然存在）。
-            bool templateManaged = PersistentTextService.IsManagingSentMessages(VariableService);
-
-            if (string.IsNullOrWhiteSpace(rawText))
-            {
-                StopTypingHeartbeat();
-                _ = OscService.SendTypingAsync(false, recordLog: false);
-
-                // 仅当用户此前确有正在实时预览的草稿文字且回退清空时，才发送清空消息
-                // 如果用户刚发送完上一句话，或切换回窗口但尚未输入任何字符，绝不发送清空消息，完整保留上一句话气泡正常显示
-                if (_hasActiveLiveText)
-                {
-                    _hasActiveLiveText = false;
-                    if (!templateManaged)
-                    {
-                        _ = OscService.SendChatboxMessageAsync(string.Empty, direct: true, playSound: false, recordLog: false);
-                    }
-                }
-                PersistentTextService.NotifyUserTyping(false);
-                return;
-            }
-
-            if (!IsLiveTypingEnabled)
-            {
-                if (IsTypingEnabled)
-                {
-                    _ = SetTypingAsync(!string.IsNullOrWhiteSpace(rawText));
-                }
-                return;
-            }
-
-            _hasActiveLiveText = true;
-            PersistentTextService.NotifyUserTyping(true);
-
-            var cts = new CancellationTokenSource();
-            _liveTypingCts = cts;
-            var token = cts.Token;
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    // 防抖 120ms，平滑快速按键并避免极端打字频率触碰 VRChat 9包/2秒 OSC限流
-                    await Task.Delay(120, token);
-                    if (token.IsCancellationRequested) return;
-
-                    lock (_typingLock)
-                    {
-                        if (_isSendingFinalMessage || token.IsCancellationRequested) return;
-                    }
-
-                    // 常驻模板接管时不写草稿预览；否则立即更新游戏内头顶气泡（逐字上屏，静音）
-                    if (!templateManaged)
-                    {
-                        string textToSend = ChatTextNormalizer.ExpandExplicitNewlines(rawText);
-                        await OscService.SendChatboxMessageAsync(textToSend, direct: true, playSound: false, recordLog: false);
-                        _lastOscSendTime = DateTime.UtcNow;
-                    }
-
-                    lock (_typingLock)
-                    {
-                        if (_isSendingFinalMessage || token.IsCancellationRequested) return;
-                    }
-
-                    // 维持打字动画状态
-                    await OscService.SendTypingAsync(true, recordLog: false);
-
-                    lock (_typingLock)
-                    {
-                        if (_isSendingFinalMessage || token.IsCancellationRequested) return;
-                        EnsureTypingHeartbeat();
-                    }
-                }
-                catch (OperationCanceledException) { }
-            });
-        }
+        get => IsTypingEnabled;
+        set => IsTypingEnabled = value;
     }
+    bool ITypingContext.IsTemplateManagingMessages => PersistentTextService.IsManagingSentMessages(VariableService);
+    void ITypingContext.NotifyUserTyping(bool typing) => PersistentTextService.NotifyUserTyping(typing);
 
-    private void EnsureTypingHeartbeat()
-    {
-        if (_typingHeartbeatCts != null) return;
-        if (_isSendingFinalMessage) return;
+    /// <summary>用户输入变化：刷新草稿预览并维持打字中状态。</summary>
+    public void UpdateLiveTyping(string rawText) => Typing.UpdateLiveTyping(rawText);
 
-        _typingHeartbeatCts = new CancellationTokenSource();
-        var token = _typingHeartbeatCts.Token;
+    /// <summary>强制停掉打字动画与心跳（不改用户的配置开关）。</summary>
+    public void SuppressTypingAnimation() => Typing.Suppress();
 
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                while (!token.IsCancellationRequested)
-                {
-                    await Task.Delay(1500, token);
-                    if (token.IsCancellationRequested) break;
-
-                    lock (_typingLock)
-                    {
-                        if (_isSendingFinalMessage || token.IsCancellationRequested) break;
-                    }
-
-                    await OscService.SendTypingAsync(true, recordLog: false);
-                }
-            }
-            catch (OperationCanceledException) { }
-        });
-    }
-
-    private void StopTypingHeartbeat()
-    {
-        _typingHeartbeatCts?.Cancel();
-        _typingHeartbeatCts?.Dispose();
-        _typingHeartbeatCts = null;
-    }
-
-    /// <summary>
-    /// 强制抑制/停止当前可能正在运行的打字动画与心跳，向 VRChat 发送 /chatbox/typing false，但不修改用户的打字配置开关
-    /// </summary>
-    public void SuppressTypingAnimation()
-    {
-        lock (_typingLock)
-        {
-            _hasActiveLiveText = false;
-            _liveTypingCts?.Cancel();
-            _liveTypingCts?.Dispose();
-            _liveTypingCts = null;
-            StopTypingHeartbeat();
-        }
-        PersistentTextService.NotifyUserTyping(false);
-        _ = OscService.SendTypingAsync(false, recordLog: false);
-    }
-
-    /// <summary>兼容旧调用点：144 字符截断规则已移入 <see cref="ChatTextNormalizer"/>。</summary>
-    private static string TruncateForChatbox(string text) => ChatTextNormalizer.TruncateForChatbox(text);
+    /// <summary>只发一次打字状态。</summary>
+    public Task<bool> SetTypingAsync(bool isTyping) => Typing.SetTypingAsync(isTyping);
 
     /// <summary>
     /// 用户确认发送消息或语音识别/翻译定稿直接发送，停止打字动画并播放提示音，带速率防抖与发送互斥保底
@@ -174,17 +49,7 @@ public partial class SettingsService
         await _sendSemaphore.WaitAsync();
         try
         {
-            CancellationTokenSource? liveCts;
-            lock (_typingLock)
-            {
-                _isSendingFinalMessage = true;
-                _hasActiveLiveText = false;
-                liveCts = _liveTypingCts;
-                _liveTypingCts = null;
-                StopTypingHeartbeat();
-            }
-            PersistentTextService.NotifyUserTyping(false);
-
+            CancellationTokenSource? liveCts = Typing.BeginFinalSend();
             try
             {
                 liveCts?.Cancel();
@@ -204,7 +69,6 @@ public partial class SettingsService
                 }
 
                 // 发送最终确认消息（包含声音配置并计入日志）。
-                // 显式换行展开 + 144 字符截断统一走 ChatTextNormalizer，避免三处各写一份正则。
                 string finalMsg = ChatTextNormalizer.PrepareForChatbox(text);
 
                 // 常驻模板接管发送消息时，不再独立直发：
@@ -217,8 +81,6 @@ public partial class SettingsService
                     VariableService.SetVariable("sent_text", finalMsg, "我发送的消息原文",
                         "本程序最近一次发送到 VRChat 的聊天文本（原文）");
 
-                    // 由常驻模板统一推送：模板显式引用 {sent_text} 时按用户位置显示，
-                    // 未引用时自动追加一个瞬态块，避免“发送了但看不到”。
                     await PersistentTextService.NotifySentMessageAsync(finalMsg, VariableService, OscService);
                     AddLog("Chat", $"消息已交给常驻模板显示: \"{finalMsg}\"", true);
                     result = true;
@@ -261,10 +123,7 @@ public partial class SettingsService
             }
             finally
             {
-                lock (_typingLock)
-                {
-                    _isSendingFinalMessage = false;
-                }
+                Typing.EndFinalSend();
             }
         }
         finally
@@ -278,12 +137,6 @@ public partial class SettingsService
         PersistentTextService.NotifyUserSentMessage();
         string finalMsg = ChatTextNormalizer.PrepareForChatbox(text);
         return await OscService.SendChatboxMessageAsync(finalMsg, IsDirectSendEnabled, IsSoundEnabled);
-    }
-
-    public async Task<bool> SetTypingAsync(bool isTyping)
-    {
-        IsTypingEnabled = isTyping;
-        return await OscService.SendTypingAsync(isTyping);
     }
 
     private void OnMessageSent(OscLogItem item)
