@@ -9,12 +9,13 @@ namespace VrcChatboxDemo.Services;
 
 public partial class SettingsService
 {
-    public record SubtitleEntry(string Original, string Translated, long LatencyMs);
-    private readonly List<SubtitleEntry> _subtitleEntries = new();
+    // 字幕队列与显示合成已移入 Core：SubtitlePipeline。
+    // 在构造函数里创建（容量来自配置属性，不能写在字段初始化器里）。
+    private readonly SubtitlePipeline _subtitle;
+
     private CancellationTokenSource? _finalTranslationCts;
     private CancellationTokenSource? _interimTranslationCts;
     private readonly object _translationLock = new();
-    private string? _currentInterimTranslation;
     private string _lastInterimTranslationText = string.Empty;
     private DateTime _lastInterimTranslationTime = DateTime.MinValue;
     private long _finalTranslationSequence = 0;
@@ -88,20 +89,15 @@ public partial class SettingsService
             _interimTranslationCts?.Dispose();
             _interimTranslationCts = null;
 
-            _currentInterimTranslation = null;
             _lastInterimTranslationText = string.Empty;
             _lastInterimTranslationTime = DateTime.MinValue;
         }
-        lock (_subtitleEntries)
-        {
-            _subtitleEntries.Clear();
-        }
+
+        _subtitle.Clear();
         _isNewSentence = true;
         _lastHypothesisSpeech = string.Empty;
         LiveCaptionsService.ResetHistory();
-        LastRecognizedText = string.Empty;
-        LastTranslatedText = string.Empty;
-        LastTranslationLatencyMs = 0;
+
         SpeechRecognizedUpdated?.Invoke(string.Empty);
         TranslationUpdated?.Invoke(string.Empty, 0);
         VariableService.SetVariable("speech", string.Empty);
@@ -125,7 +121,7 @@ public partial class SettingsService
             VariableService.SetVariable("speech", cleanHypo);
         }
 
-        UpdateCombinedSubtitles(interimText);
+        _subtitle.UpdateDisplay(interimText);
         TryTriggerInterimTranslation(interimText);
     }
 
@@ -234,7 +230,7 @@ public partial class SettingsService
 
                 lock (_translationLock)
                 {
-                    _currentInterimTranslation = cleanTrans;
+                    _subtitle.InterimTranslation = cleanTrans;
                 }
 
                 // 提前更新模板变量，让游戏内头顶气泡即时展现预翻译
@@ -259,16 +255,8 @@ public partial class SettingsService
 
         AddLog("Speech", text, true);
 
-        // 提交当前识别出的完整句子到字幕队列
-        var entry = new SubtitleEntry(text, string.Empty, 0);
-        lock (_subtitleEntries)
-        {
-            _subtitleEntries.Add(entry);
-            while (_subtitleEntries.Count > Math.Max(1, SubtitleQueueCapacity))
-            {
-                _subtitleEntries.RemoveAt(0);
-            }
-        }
+        // 提交当前识别出的完整句子到字幕队列（容量裁剪由管线负责）
+        _subtitle.AddFinalSentence(text);
 
         lock (_translationLock)
         {
@@ -277,14 +265,14 @@ public partial class SettingsService
             _interimTranslationCts?.Dispose();
             _interimTranslationCts = null;
 
-            _currentInterimTranslation = null;
+            _subtitle.InterimTranslation = null;
             _lastInterimTranslationText = string.Empty;
         }
 
         _isNewSentence = true;
         _lastHypothesisSpeech = string.Empty;
 
-        UpdateCombinedSubtitles();
+        _subtitle.UpdateDisplay();
         VariableService.SetVariable("speech", text);
 
         if (IsTranslationEnabled)
@@ -316,18 +304,11 @@ public partial class SettingsService
 
                     // 更新队列中该句对应的翻译内容与延迟，精准覆盖
                     string cleanTrans = (result.Text ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
-                    lock (_subtitleEntries)
-                    {
-                        int idx = _subtitleEntries.FindLastIndex(e => e.Original == text);
-                        if (idx >= 0)
-                        {
-                            _subtitleEntries[idx] = new SubtitleEntry(text, cleanTrans, result.LatencyMs);
-                        }
-                    }
+                    _subtitle.ApplyFinalTranslation(text, cleanTrans, result.LatencyMs);
 
                     // 终态精准覆盖变量
                     VariableService.SetVariable("translation", cleanTrans);
-                    UpdateCombinedSubtitles();
+                    _subtitle.UpdateDisplay();
 
                     // 若开启了翻译结果自动 TTS 语音朗读，触发推流 (读给外国玩家听)
                     if (IsTtsEnabled && IsTtsAutoReadTranslation && !string.IsNullOrWhiteSpace(cleanTrans))
@@ -448,118 +429,13 @@ public partial class SettingsService
         }
     }
 
-    private void UpdateCombinedSubtitles(string? currentHypothesis = null)
-    {
-        int capacity = Math.Max(1, SubtitleQueueCapacity);
+    /// <summary>兼容转发：显示合成规则见 <see cref="SubtitlePipeline.UpdateDisplay"/>。</summary>
+    private void UpdateCombinedSubtitles(string? currentHypothesis = null) =>
+        _subtitle.UpdateDisplay(currentHypothesis);
 
-        // 对临时假说进行严格规范化：
-        // 1. 过滤内部换行符
-        // 2. 如果假说中混入了包含句子终结符的已完成句子，仅保留最后一个未闭合的分句
-        string cleanHypothesis = string.Empty;
-        if (!string.IsNullOrWhiteSpace(currentHypothesis))
-        {
-            string h = currentHypothesis.Replace("\r", "").Replace("\n", " ").Trim();
-            int cutIdx = FindLastSentenceCutIndex(h);
-            if (cutIdx >= 0 && cutIdx < h.Length - 1)
-            {
-                h = h.Substring(cutIdx + 1).TrimStart(' ', '\t', '，', ',', '、', '；', ';', '。', '！', '？', '…', '.', '!', '?');
-            }
-            cleanHypothesis = h;
-        }
-
-        List<SubtitleEntry> snapshot;
-        lock (_subtitleEntries)
-        {
-            int historyToTake = string.IsNullOrEmpty(cleanHypothesis)
-                ? capacity
-                : Math.Max(0, capacity - 1);
-
-            snapshot = _subtitleEntries
-                .Skip(Math.Max(0, _subtitleEntries.Count - historyToTake))
-                .ToList();
-        }
-
-        var originalLines = new List<string>();
-        var translatedLines = new List<string>();
-        long latestLatency = 0;
-
-        foreach (var item in snapshot)
-        {
-            string orig = (item.Original ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
-            string trans = (item.Translated ?? string.Empty).Replace("\r", "").Replace("\n", " ").Trim();
-            if (!string.IsNullOrWhiteSpace(orig)) originalLines.Add(orig);
-            if (!string.IsNullOrWhiteSpace(trans)) translatedLines.Add(trans);
-            if (item.LatencyMs > 0) latestLatency = item.LatencyMs;
-        }
-
-        string? interimTrans = null;
-        lock (_translationLock)
-        {
-            interimTrans = _currentInterimTranslation;
-        }
-
-        if (!string.IsNullOrWhiteSpace(cleanHypothesis))
-        {
-            originalLines.Add(cleanHypothesis.Trim() + " ...");
-            // 若当前存在中途预翻译结果，同步呈现在翻译行中
-            if (!string.IsNullOrWhiteSpace(interimTrans))
-            {
-                translatedLines.Add(interimTrans.Trim() + " ...");
-            }
-        }
-
-        // 强保障：无论如何，最终呈现的行数绝对不可超过 capacity 限制
-        while (originalLines.Count > capacity)
-        {
-            originalLines.RemoveAt(0);
-        }
-        while (translatedLines.Count > capacity)
-        {
-            translatedLines.RemoveAt(0);
-        }
-
-        string fullOriginal = string.Join("\n", originalLines);
-        string fullTranslated = string.Join("\n", translatedLines);
-
-        LastRecognizedText = fullOriginal;
-        LastTranslatedText = fullTranslated;
-        LastTranslationLatencyMs = latestLatency;
-
-        if (string.IsNullOrEmpty(cleanHypothesis))
-        {
-            SpeechRecognizedUpdated?.Invoke(fullOriginal);
-        }
-        else
-        {
-            SpeechHypothesisUpdated?.Invoke(fullOriginal);
-        }
-
-        TranslationUpdated?.Invoke(fullTranslated, latestLatency);
-        DisplaySettingsChanged?.Invoke();
-    }
-
-    private static int FindLastSentenceCutIndex(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return -1;
-
-        int lastCut = -1;
-
-        for (int i = 0; i < text.Length; i++)
-        {
-            char c = text[i];
-            if (c == '。' || c == '！' || c == '？' || c == '…' || c == '.' || c == '!' || c == '?')
-            {
-                // 小数点防护（如 3.14）
-                if (c == '.' && i > 0 && i + 1 < text.Length && char.IsDigit(text[i - 1]) && char.IsDigit(text[i + 1]))
-                {
-                    continue;
-                }
-                lastCut = i;
-            }
-        }
-
-        return lastCut;
-    }
+    /// <summary>兼容转发：句末标点定位见 <see cref="SubtitlePipeline.FindLastSentenceCutIndex"/>。</summary>
+    private static int FindLastSentenceCutIndex(string text) =>
+        SubtitlePipeline.FindLastSentenceCutIndex(text);
 
     /// <summary>兼容转发：目标语言归一化规则见 <see cref="TranslationPolicy.ParseTargetLanguage"/>。</summary>
     private static string ParseTargetLanguage(string? targetLanguage) =>

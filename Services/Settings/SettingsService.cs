@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using Microsoft.UI;
 using Microsoft.UI.Xaml.Media;
+using VrcChatboxDemo.Services.Speech;
 using VrcChatboxDemo.Services.Tts;
 
 namespace VrcChatboxDemo.Services;
@@ -447,14 +448,8 @@ public partial class SettingsService
             {
                 Config.SubtitleQueueCapacity = value;
                 SaveConfigDebounced();
-                lock (_subtitleEntries)
-                {
-                    while (_subtitleEntries.Count > Math.Max(1, value))
-                    {
-                        _subtitleEntries.RemoveAt(0);
-                    }
-                }
-                UpdateCombinedSubtitles();
+                // 容量裁剪与重绘由管线负责（它会读取最新容量）
+                _subtitle.UpdateDisplay();
             }
         }
     }
@@ -949,10 +944,10 @@ public partial class SettingsService
         return new TtsSynthesisResult(ok, null, 0, 0, 24000, ok ? null : "流式合成推流未完成");
     }
 
-    // 实时状态
-    public string LastRecognizedText { get; private set; } = string.Empty;
-    public string LastTranslatedText { get; private set; } = string.Empty;
-    public long LastTranslationLatencyMs { get; private set; } = 0;
+    // 实时状态（字幕文本由 SubtitlePipeline 维护，这里只做转发）
+    public string LastRecognizedText => _subtitle.LastRecognizedText;
+    public string LastTranslatedText => _subtitle.LastTranslatedText;
+    public long LastTranslationLatencyMs => _subtitle.LastTranslationLatencyMs;
     public string SpeechStatus { get; private set; } = "就绪";
 
     public event Action<bool>? SpeechRecognitionStateChanged;
@@ -989,7 +984,15 @@ public partial class SettingsService
 
     private SettingsService()
     {
+        _subtitle = new SubtitlePipeline(() => SubtitleQueueCapacity);
+
         LoadConfig();
+
+        // 字幕管线的显示事件转发给界面订阅者（UI 只认 SettingsService 的公开事件）
+        _subtitle.RecognizedUpdated += text => SpeechRecognizedUpdated?.Invoke(text);
+        _subtitle.HypothesisUpdated += text => SpeechHypothesisUpdated?.Invoke(text);
+        _subtitle.TranslationUpdated += (text, latency) => TranslationUpdated?.Invoke(text, latency);
+        _subtitle.DisplayChanged += () => DisplaySettingsChanged?.Invoke();
 
         LiveCaptionsAutoSwitcher = new LiveCaptionsLanguageAutoSwitcher(LiveCaptionsService, this);
         if (Config.LiveCaptionsAutoDetectLanguage)
